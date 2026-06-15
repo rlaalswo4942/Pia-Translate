@@ -1,0 +1,38 @@
+# Flutter
+flutter_app/.dart_tool/
+flutter_app/.flutter-plugins
+flutter_app/.flutter-plugins-dependencies
+flutter_app/build/
+flutter_app/.packages
+flutter_app/pubspec.lock
+
+# Android
+flutter_app/android/.gradle/
+flutter_app/android/local.properties
+flutter_app/android/key.properties
+flutter_app/android/app/debug/
+flutter_app/android/app/release/
+flutter_app/android/app/profile/
+*.keystore
+*.jks
+
+# iOS
+flutter_app/ios/Pods/
+flutter_app/ios/.symlinks/
+flutter_app/ios/Flutter/Flutter.framework
+flutter_app/ios/Flutter/Flutter.podspec
+
+# 모델 파일 (용량 큼 — HuggingFace Hub에 별도 저장)
+models/
+flutter_app/assets/models/*.onnx
+flutter_app/assets/models/*.spm
+flutter_app/assets/models/*.bin
+
+# Python
+scripts/__pycache__/
+scripts/*.pyc
+*.egg-info/
+
+# 환경
+.env
+*.log
