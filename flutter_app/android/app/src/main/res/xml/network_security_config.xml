@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  HTTPS 전용 네트워크 보안 설정
+  - cleartext (HTTP) 트래픽 전면 차단
+  - 허용 도메인: HuggingFace, alphacephei (모델 다운로드 전용)
+  - 앱 자체 통신은 없음 (완전 오프라인 번역/음성 인식)
+-->
+<network-security-config>
+
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system"/>
+        </trust-anchors>
+    </base-config>
+
+    <!-- 모델 다운로드 허용 도메인 (HTTPS 전용) -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">huggingface.co</domain>
+        <domain includeSubdomains="true">alphacephei.com</domain>
+        <trust-anchors>
+            <certificates src="system"/>
+        </trust-anchors>
+    </domain-config>
+
+</network-security-config>

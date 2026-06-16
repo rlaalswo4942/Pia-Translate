@@ -1,0 +1,160 @@
+name: 빌드 & 릴리스
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '릴리스 버전 (예: v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+env:
+  FLUTTER_VERSION: '3.22.3'
+
+jobs:
+  build:
+    name: Android APK 빌드
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 소스 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Java 17 설치
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Flutter 설치
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Android NDK 설치
+        run: |
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            --install "ndk;26.1.10909125"
+
+      - name: Flutter 빌드 시스템 파일 생성
+        run: |
+          # 임시 스캐폴드로 Gradle 파일 추출 (우리 소스는 건드리지 않음)
+          flutter create \
+            --org com.pia \
+            --project-name pia_translate \
+            --platforms android \
+            /tmp/flutter_scaffold
+
+          TARGET=flutter_app/android
+
+          cp /tmp/flutter_scaffold/android/build.gradle         $TARGET/
+          cp /tmp/flutter_scaffold/android/settings.gradle      $TARGET/
+          cp /tmp/flutter_scaffold/android/gradle.properties    $TARGET/
+          cp /tmp/flutter_scaffold/android/app/build.gradle     $TARGET/app/
+          cp -r /tmp/flutter_scaffold/android/gradle            $TARGET/
+          cp /tmp/flutter_scaffold/android/gradlew              $TARGET/
+          chmod +x $TARGET/gradlew
+
+          # 기본 리소스 (아이콘, 테마)
+          cp -r /tmp/flutter_scaffold/android/app/src/main/res/mipmap-* \
+                $TARGET/app/src/main/res/ 2>/dev/null || true
+          mkdir -p $TARGET/app/src/main/res/values
+          cp /tmp/flutter_scaffold/android/app/src/main/res/values/styles.xml \
+             $TARGET/app/src/main/res/values/ 2>/dev/null || true
+
+      - name: app/build.gradle — NDK + CMake 설정 추가
+        run: |
+          python3 << 'PYEOF'
+          path = 'flutter_app/android/app/build.gradle'
+          with open(path) as f:
+              src = f.read()
+
+          # NDK 버전
+          if 'ndkVersion' not in src:
+              src = src.replace(
+                  'compileSdk flutter.compileSdkVersion',
+                  'ndkVersion "26.1.10909125"\n    compileSdk flutter.compileSdkVersion'
+              )
+
+          # defaultConfig 내 cmake 플래그
+          if 'externalNativeBuild' not in src:
+              src = src.replace(
+                  '        versionName flutterVersionName',
+                  '        versionName flutterVersionName\n'
+                  '        externalNativeBuild {\n'
+                  '            cmake { cppFlags "-std=c++17" }\n'
+                  '        }'
+              )
+              # android 블록에 cmake 경로
+              src = src.replace(
+                  '\n    buildTypes {',
+                  '\n    externalNativeBuild {\n'
+                  '        cmake {\n'
+                  '            path "CMakeLists.txt"\n'
+                  '            version "3.22.1"\n'
+                  '        }\n'
+                  '    }\n\n    buildTypes {'
+              )
+
+          with open(path, 'w') as f:
+              f.write(src)
+          print('[OK] app/build.gradle 수정 완료')
+          PYEOF
+
+      - name: minSdk 21 강제 설정 (Vosk 최소 요구사항)
+        run: |
+          sed -i \
+            's/minSdk flutter\.minSdkVersion/minSdk 21/' \
+            flutter_app/android/app/build.gradle
+
+      - name: Flutter 의존성 설치
+        working-directory: flutter_app
+        run: flutter pub get
+
+      - name: APK 빌드 (Release)
+        working-directory: flutter_app
+        run: flutter build apk --release
+
+      - name: 태그명 결정
+        id: meta
+        run: |
+          TAG="${GITHUB_REF_NAME:-}"
+          if [ -z "$TAG" ] || [ "$TAG" = "main" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: GitHub Release 생성 & APK 업로드
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: "Pia 번역 ${{ steps.meta.outputs.tag }}"
+          draft: false
+          prerelease: false
+          files: flutter_app/build/app/outputs/flutter-apk/app-release.apk
+          body: |
+            ## Pia 번역 — 오프라인 AI 번역 앱
+
+            인터넷 없이 폰에서 직접 번역합니다.
+
+            ### 지원 언어
+            🇰🇷 한국어 ↔ 🇺🇸 영어 · 🇯🇵 일본어 · 🇨🇳 중국어 · 🇫🇷 프랑스어
+
+            ### 주요 기능
+            - 텍스트 번역 (완전 오프라인)
+            - 🎤 음성 인식 후 자동 번역 (마이크 버튼)
+            - 보안: HTTPS 전용, Zip Slip 방지, 모델 SHA256 검증 구조
+            - 첫 실행 시 모델 자동 다운로드
+              - 번역 모델: 언어쌍당 ~50MB
+              - 음성 인식 모델 (한국어 대형): ~370MB
+
+            ### 설치 방법
+            1. `app-release.apk` 다운로드
+            2. 폰 설정 → **알 수 없는 출처 앱 설치 허용**
+            3. APK 파일을 열어 설치
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,5 +1,4 @@
 import 'dart:typed_data';
-import 'dart:math' show exp;
 import 'package:flutter/services.dart';
 import 'package:onnxruntime/onnxruntime.dart';
 import 'package:path/path.dart' as p;
