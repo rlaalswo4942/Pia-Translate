@@ -28,7 +28,7 @@ dependencies:
   percent_indicator: ^4.2.3
 
   # 음성 인식 (오프라인 Vosk STT)
-  vosk_flutter: ^0.2.0
+  vosk_flutter: ^0.3.48
 
   # 보안: SHA256 해시 검증
   crypto: ^3.0.3
