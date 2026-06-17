@@ -11,7 +11,7 @@ dependencies:
     sdk: flutter
 
   # ONNX Runtime — 온디바이스 모델 추론
-  onnxruntime: ^1.18.0
+  onnxruntime: ^1.4.1
 
   # 파일 시스템 — 모델 캐시 경로 관리
   path_provider: ^2.1.3

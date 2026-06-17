@@ -3,9 +3,8 @@
     <!-- 번역 모델 / Vosk 모델 첫 실행 시 다운로드 -->
     <uses-permission android:name="android.permission.INTERNET"/>
 
-    <!-- Vosk 음성 인식 -->
+    <!-- Vosk 음성 인식 — RECORD_AUDIO 만 필요, MODIFY_AUDIO_SETTINGS 불필요 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
-    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
 
     <!-- OCR — 카메라 촬영 및 갤러리 접근 -->
     <uses-permission android:name="android.permission.CAMERA"/>
@@ -18,7 +17,10 @@
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:networkSecurityConfig="@xml/network_security_config"
-        android:usesCleartextTraffic="false">
+        android:usesCleartextTraffic="false"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules">
         <activity
             android:name=".MainActivity"
             android:exported="true"
