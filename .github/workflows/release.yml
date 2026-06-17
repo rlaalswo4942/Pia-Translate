@@ -125,9 +125,51 @@ jobs:
         working-directory: flutter_app
         run: flutter pub get
 
+      - name: APK 빌드 보안 검사 — 위험 패턴 스캔
+        run: |
+          echo "── 하드코딩 시크릿 검사 ──"
+          # API 키, 비밀번호 패턴 탐지
+          if grep -rn \
+            -e 'api[_-]\?key\s*=\s*["'"'"'][A-Za-z0-9]{16,}' \
+            -e 'password\s*=\s*["'"'"'][^"'"'"']{6,}' \
+            -e 'secret\s*=\s*["'"'"'][^"'"'"']{6,}' \
+            flutter_app/lib/ 2>/dev/null; then
+            echo "[경고] 하드코딩된 시크릿 의심 패턴 발견 — 확인 필요"
+          else
+            echo "[OK] 하드코딩 시크릿 없음"
+          fi
+
+          echo "── 허용 외 도메인 하드코딩 검사 ──"
+          if grep -rn 'http://' flutter_app/lib/ 2>/dev/null; then
+            echo "[실패] HTTP 평문 URL 발견"
+            exit 1
+          else
+            echo "[OK] HTTPS 전용 확인"
+          fi
+
       - name: APK 빌드 (Release)
         working-directory: flutter_app
         run: flutter build apk --release
+
+      - name: APK 무결성 검증
+        id: verify_apk
+        run: |
+          APK=flutter_app/build/app/outputs/flutter-apk/app-release.apk
+          if [ ! -f "$APK" ]; then
+            echo "[실패] APK 파일이 생성되지 않았습니다"
+            exit 1
+          fi
+          SIZE=$(stat -c%s "$APK")
+          SIZE_MB=$((SIZE / 1024 / 1024))
+          SHA256=$(sha256sum "$APK" | awk '{print $1}')
+          echo "[OK] APK 크기: ${SIZE_MB}MB"
+          echo "[OK] APK SHA256: ${SHA256}"
+          echo "sha256=${SHA256}" >> $GITHUB_OUTPUT
+          # 비정상적으로 작은 APK 차단 (5MB 미만이면 빌드 실패)
+          if [ "$SIZE" -lt 5242880 ]; then
+            echo "[실패] APK가 비정상적으로 작습니다 (${SIZE_MB}MB)"
+            exit 1
+          fi
 
       - name: 태그명 결정
         id: meta
@@ -149,22 +191,32 @@ jobs:
           body: |
             ## Pia 번역 — 오프라인 AI 번역 앱
 
+            > **다운로드 페이지**: https://rlaalswo4942.github.io/Pia-Translate/
+            > **직접 다운로드**: [app-release.apk](https://github.com/rlaalswo4942/Pia-Translate/releases/latest/download/app-release.apk)
+
             인터넷 없이 폰에서 직접 번역합니다.
 
             ### 지원 언어
             🇰🇷 한국어 ↔ 🇺🇸 영어 · 🇯🇵 일본어 · 🇨🇳 중국어 · 🇫🇷 프랑스어
 
             ### 주요 기능
-            - 텍스트 번역 (완전 오프라인)
-            - 🎤 음성 인식 후 자동 번역 (마이크 버튼)
-            - 보안: HTTPS 전용, Zip Slip 방지, 모델 SHA256 검증 구조
+            - ⌨️ 텍스트 번역 (완전 오프라인)
+            - 🎤 음성 인식 후 자동 번역 (Vosk 한국어 대형 모델)
+            - 📷 이미지 텍스트 인식 후 번역 (ML Kit OCR)
+            - 보안: HTTPS 전용, Zip Slip 방지, 허용 도메인 검증, 입력 길이 제한
             - 첫 실행 시 모델 자동 다운로드
-              - 번역 모델: 언어쌍당 ~50MB
+              - 번역 모델: 언어쌍당 ~60MB
               - 음성 인식 모델 (한국어 대형): ~370MB
 
             ### 설치 방법
-            1. `app-release.apk` 다운로드
+            1. 위 `app-release.apk` 다운로드 (또는 다운로드 페이지 방문)
             2. 폰 설정 → **알 수 없는 출처 앱 설치 허용**
             3. APK 파일을 열어 설치
+            4. 앱 실행 → 필요한 모델이 자동 다운로드됨
+
+            ### APK 무결성
+            ```
+            SHA256: ${{ steps.verify_apk.outputs.sha256 }}
+            ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

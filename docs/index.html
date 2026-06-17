@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <meta name="description" content="Pia 번역 — 인터넷 없이 작동하는 오프라인 AI 번역 앱. 한국어, 영어, 일본어, 중국어, 프랑스어 지원.">
+  <title>Pia 번역 — 오프라인 AI 번역 앱</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, 'Noto Sans KR', sans-serif;
+      background: #0F172A;
+      color: #E2E8F0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 48px 20px 80px;
+    }
+
+    .hero {
+      text-align: center;
+      max-width: 480px;
+      width: 100%;
+    }
+
+    .app-icon {
+      width: 96px; height: 96px;
+      background: linear-gradient(135deg, #1E40AF, #3B82F6);
+      border-radius: 24px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 48px;
+      margin: 0 auto 24px;
+      box-shadow: 0 8px 32px rgba(59,130,246,0.4);
+    }
+
+    h1 {
+      font-size: 2.2rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, #60A5FA, #A78BFA);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 8px;
+    }
+
+    .tagline {
+      color: #94A3B8;
+      font-size: 1rem;
+      margin-bottom: 40px;
+      line-height: 1.6;
+    }
+
+    .download-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      background: linear-gradient(135deg, #2563EB, #7C3AED);
+      color: #fff;
+      text-decoration: none;
+      padding: 18px 40px;
+      border-radius: 16px;
+      font-size: 1.15rem;
+      font-weight: 700;
+      box-shadow: 0 8px 24px rgba(37,99,235,0.4);
+      transition: transform 0.15s, box-shadow 0.15s;
+      margin-bottom: 12px;
+      width: 100%;
+      max-width: 320px;
+      justify-content: center;
+    }
+    .download-btn:hover { transform: translateY(-2px); box-shadow: 0 12px 32px rgba(37,99,235,0.5); }
+    .download-btn:active { transform: translateY(0); }
+
+    .version-note {
+      color: #64748B;
+      font-size: 0.82rem;
+      margin-bottom: 48px;
+    }
+
+    /* 기능 카드 */
+    .features {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      max-width: 640px;
+      width: 100%;
+      margin-bottom: 48px;
+    }
+    .feat {
+      background: #1E293B;
+      border: 1px solid #334155;
+      border-radius: 16px;
+      padding: 20px;
+    }
+    .feat-icon { font-size: 1.8rem; margin-bottom: 8px; }
+    .feat-title { font-weight: 700; font-size: 0.95rem; margin-bottom: 4px; }
+    .feat-desc { color: #94A3B8; font-size: 0.82rem; line-height: 1.5; }
+
+    /* 언어 뱃지 */
+    .langs {
+      display: flex; flex-wrap: wrap; gap: 10px;
+      justify-content: center;
+      max-width: 480px;
+      margin-bottom: 48px;
+    }
+    .lang-badge {
+      background: #1E293B;
+      border: 1px solid #334155;
+      border-radius: 100px;
+      padding: 8px 18px;
+      font-size: 0.88rem;
+    }
+
+    /* 설치 안내 */
+    .install-guide {
+      background: #1E293B;
+      border: 1px solid #334155;
+      border-radius: 20px;
+      padding: 28px;
+      max-width: 480px;
+      width: 100%;
+      margin-bottom: 40px;
+    }
+    .install-guide h2 {
+      font-size: 1.05rem;
+      font-weight: 700;
+      margin-bottom: 20px;
+      color: #CBD5E1;
+    }
+    .steps { list-style: none; }
+    .step {
+      display: flex; align-items: flex-start; gap: 16px;
+      margin-bottom: 18px;
+    }
+    .step:last-child { margin-bottom: 0; }
+    .step-num {
+      flex-shrink: 0;
+      width: 28px; height: 28px;
+      background: linear-gradient(135deg, #2563EB, #7C3AED);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.8rem; font-weight: 700;
+    }
+    .step-text { font-size: 0.9rem; color: #CBD5E1; line-height: 1.6; padding-top: 3px; }
+    .step-text b { color: #fff; }
+
+    .warning-box {
+      background: rgba(251,191,36,0.08);
+      border: 1px solid rgba(251,191,36,0.25);
+      border-radius: 12px;
+      padding: 14px 18px;
+      font-size: 0.85rem;
+      color: #FCD34D;
+      margin-top: 20px;
+      line-height: 1.6;
+    }
+
+    footer {
+      color: #334155;
+      font-size: 0.78rem;
+      text-align: center;
+      margin-top: auto;
+      padding-top: 40px;
+    }
+    footer a { color: #475569; text-decoration: none; }
+    footer a:hover { color: #64748B; }
+  </style>
+</head>
+<body>
+
+  <div class="hero">
+    <div class="app-icon">🌐</div>
+    <h1>Pia 번역</h1>
+    <p class="tagline">
+      인터넷 없이 폰에서 직접 번역<br>
+      텍스트 · 음성 · 이미지 3가지 입력 지원
+    </p>
+
+    <a class="download-btn"
+       href="https://github.com/rlaalswo4942/Pia-Translate/releases/latest/download/app-release.apk"
+       download>
+      ⬇ &nbsp;APK 다운로드
+    </a>
+    <p class="version-note">Android 5.0 이상 · 최신 버전 자동 제공</p>
+  </div>
+
+  <!-- 기능 -->
+  <div class="features">
+    <div class="feat">
+      <div class="feat-icon">⌨️</div>
+      <div class="feat-title">텍스트 번역</div>
+      <div class="feat-desc">직접 입력 후 즉시 번역, 최대 2000자</div>
+    </div>
+    <div class="feat">
+      <div class="feat-icon">🎤</div>
+      <div class="feat-title">음성 번역</div>
+      <div class="feat-desc">말하면 자동 인식 후 번역 (오프라인 Vosk)</div>
+    </div>
+    <div class="feat">
+      <div class="feat-icon">📷</div>
+      <div class="feat-title">이미지 번역</div>
+      <div class="feat-desc">사진 속 텍스트 자동 인식 후 번역 (ML Kit)</div>
+    </div>
+    <div class="feat">
+      <div class="feat-icon">🔒</div>
+      <div class="feat-title">완전 오프라인</div>
+      <div class="feat-desc">모델 다운로드 후 인터넷 없이 동작</div>
+    </div>
+  </div>
+
+  <!-- 지원 언어 -->
+  <div class="langs">
+    <span class="lang-badge">🇰🇷 한국어</span>
+    <span class="lang-badge">🇺🇸 영어</span>
+    <span class="lang-badge">🇯🇵 일본어</span>
+    <span class="lang-badge">🇨🇳 중국어</span>
+    <span class="lang-badge">🇫🇷 프랑스어</span>
+  </div>
+
+  <!-- 설치 안내 -->
+  <div class="install-guide">
+    <h2>📱 설치 방법</h2>
+    <ul class="steps">
+      <li class="step">
+        <div class="step-num">1</div>
+        <div class="step-text">위 <b>APK 다운로드</b> 버튼을 눌러 파일을 저장합니다</div>
+      </li>
+      <li class="step">
+        <div class="step-num">2</div>
+        <div class="step-text">
+          Android 설정 → <b>앱 및 알림</b> → <b>알 수 없는 앱 설치</b><br>
+          → 브라우저 앱 선택 → <b>허용</b>
+        </div>
+      </li>
+      <li class="step">
+        <div class="step-num">3</div>
+        <div class="step-text">다운로드된 <b>app-release.apk</b> 파일을 열어 설치합니다</div>
+      </li>
+      <li class="step">
+        <div class="step-num">4</div>
+        <div class="step-text">
+          첫 실행 시 번역 모델이 자동 다운로드됩니다<br>
+          <span style="color:#64748B">(언어쌍당 ~60MB · Wi-Fi 권장)</span>
+        </div>
+      </li>
+    </ul>
+    <div class="warning-box">
+      ⚠ "알 수 없는 출처" 허용은 이 앱 설치 후 다시 <b>해제</b>하는 것을 권장합니다
+    </div>
+  </div>
+
+  <footer>
+    <p>
+      오픈소스 &nbsp;·&nbsp;
+      <a href="https://github.com/rlaalswo4942/Pia-Translate" target="_blank">
+        GitHub 저장소
+      </a>
+      &nbsp;·&nbsp;
+      <a href="https://github.com/rlaalswo4942/Pia-Translate/releases" target="_blank">
+        모든 버전 보기
+      </a>
+    </p>
+    <p style="margin-top:8px">Helsinki-NLP OPUS-MT · Vosk · Google ML Kit · Flutter</p>
+  </footer>
+
+</body>
+</html>

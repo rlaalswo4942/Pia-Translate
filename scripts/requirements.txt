@@ -1,4 +1,11 @@
-ctranslate2>=3.24.0
-sentencepiece>=0.2.0
+# ONNX 변환: optimum + ONNX Runtime
+optimum[onnxruntime]>=1.20.0
+
+# HuggingFace 모델 다운로드 + 토크나이저
 transformers>=4.40.0
+
+# SentencePiece 토크나이저 (MarianMT)
+sentencepiece>=0.2.0
+
+# PyTorch (모델 가중치 로드용, CPU 버전으로 충분)
 torch>=2.0.0

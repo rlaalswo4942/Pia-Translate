@@ -2,22 +2,24 @@
 
 class AppConfig {
   // ── 모델 다운로드 ────────────────────────────────────────────
+  // GitHub Release 'models-v1' 에 업로드된 ONNX ZIP 파일
   static const String modelBaseUrl =
-      'https://huggingface.co/rlaalswo4942/pia-translate-models/resolve/main';
+      'https://github.com/rlaalswo4942/Pia-Translate/releases/download/models-v1';
 
   // ── 보안: 허용 다운로드 도메인 ───────────────────────────────
-  // 이 목록에 없는 도메인에서의 모델 다운로드는 차단됨
+  // 이 목록에 없는 도메인에서의 다운로드는 모두 차단
   static const List<String> allowedDownloadHosts = [
-    'huggingface.co',
-    'alphacephei.com',
+    'github.com',                   // 번역 모델 (GitHub Releases)
+    'objects.githubusercontent.com', // GitHub CDN (Releases 리디렉션 대상)
+    'alphacephei.com',              // Vosk 음성 인식 모델
+    'huggingface.co',               // 예비 (HuggingFace 직접 업로드 시)
   ];
 
   // ── 보안: 모델별 SHA256 해시 (무결성 검증) ───────────────────
-  // 모델 파일을 실제로 배포한 후 해시값을 채워 넣을 것
-  // sha256sum <model>.zip 으로 확인
-  // 값이 null 이면 해시 검증을 건너뜀 (배포 전 임시)
+  // 모델 변환 & 업로드 후 sha256sum <file>.zip 으로 확인 후 채워 넣을 것
+  // null = 해시 검증 건너뜀 (배포 전 임시 허용)
   static const Map<String, String?> modelSha256 = {
-    'ko_en':   null, // TODO: 배포 후 실제 해시 입력
+    'ko_en':   null,
     'en_ko':   null,
     'en_ja':   null,
     'ja_en':   null,
@@ -25,23 +27,23 @@ class AppConfig {
     'zh_en':   null,
     'en_fr':   null,
     'fr_en':   null,
-    'vosk_ko': null, // vosk-model-ko-0.22.zip
+    'vosk_ko': null,
   };
 
-  // ── 입력 제한 ─────────────────────────────────────────────────
-  static const int maxInputChars = 2000; // 번역 입력 최대 글자 수
+  // ── 입력 제한 ────────────────────────────────────────────────
+  static const int maxInputChars = 2000;
 
-  // ── 앱 정보 ─────────────────────────────────────────────────
+  // ── 앱 정보 ──────────────────────────────────────────────────
   static const String appName    = 'Pia 번역';
   static const String appVersion = '1.0.0';
 
   // ── 추론 설정 ────────────────────────────────────────────────
-  static const int maxOutputLength = 256;   // 최대 출력 토큰 수
-  static const int beamSize        = 4;     // beam search 크기 (1=greedy)
-  static const double lengthPenalty = 0.6;  // 번역 길이 패널티
+  static const int maxOutputLength = 256;
+  static const int beamSize        = 1;    // greedy decoding (속도 우선)
+  static const double lengthPenalty = 0.6;
 
   // ── 캐시 ─────────────────────────────────────────────────────
-  static const String modelSubDir = 'translate_models'; // 앱 문서 디렉토리 내 경로
+  static const String modelSubDir = 'translate_models';
 
   // ── Vosk STT ─────────────────────────────────────────────────
   static const String voskModelName = 'vosk_ko';

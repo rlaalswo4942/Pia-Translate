@@ -1,0 +1,75 @@
+name: 번역 모델 변환 & 배포
+
+# 수동 실행 전용 — 모델이 변경될 때만 실행
+on:
+  workflow_dispatch:
+
+jobs:
+  convert:
+    name: ONNX 변환 & models-v1 릴리스 업로드
+    runs-on: ubuntu-latest
+    # 큰 모델 파일 변환 + 업로드 — 넉넉하게 설정
+    timeout-minutes: 120
+
+    permissions:
+      contents: write  # Release 생성/수정에 필요
+
+    steps:
+      - name: 소스 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 의존성 설치
+        run: |
+          pip install --upgrade pip
+          pip install -r scripts/requirements.txt
+
+      - name: 모델 변환 (OPUS-MT → ONNX)
+        run: python scripts/convert_models.py
+
+      - name: 변환 결과 확인
+        run: |
+          echo "── ZIP 파일 목록 ──"
+          ls -lh models_zip/*.zip 2>/dev/null || echo "ZIP 없음 — 변환 실패"
+          echo ""
+          echo "── 총 크기 ──"
+          du -sh models_zip/ 2>/dev/null || true
+
+      - name: models-v1 릴리스 삭제 (재업로드를 위해)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete models-v1 --yes 2>/dev/null || echo "기존 릴리스 없음 — 새로 생성"
+
+      - name: models-v1 릴리스 생성 & ZIP 업로드
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create models-v1 \
+            --title "번역 모델 패키지 (ONNX)" \
+            --notes "$(cat <<'NOTE'
+          ## Pia 번역 — 오프라인 번역 모델
+
+          앱이 첫 실행 시 자동으로 다운로드합니다. 직접 다운로드 불필요.
+
+          | 파일 | 언어쌍 | 크기 |
+          |------|--------|------|
+          | ko_en.zip | 한국어 → 영어 | ~60MB |
+          | en_ko.zip | 영어 → 한국어 | ~60MB |
+          | en_ja.zip | 영어 → 일본어 | ~60MB |
+          | ja_en.zip | 일본어 → 영어 | ~60MB |
+          | en_zh.zip | 영어 → 중국어 | ~60MB |
+          | zh_en.zip | 중국어 → 영어 | ~60MB |
+          | en_fr.zip | 영어 → 프랑스어 | ~60MB |
+          | fr_en.zip | 프랑스어 → 영어 | ~60MB |
+
+          변환 기반: Helsinki-NLP OPUS-MT, optimum ONNX 내보내기
+          NOTE
+          )" \
+            --prerelease \
+            models_zip/*.zip
