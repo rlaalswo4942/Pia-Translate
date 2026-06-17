@@ -27,8 +27,8 @@ dependencies:
   # 진행률 표시 (다운로드)
   percent_indicator: ^4.2.3
 
-  # 음성 인식 (오프라인 Vosk STT)
-  vosk_flutter: ^0.3.48
+  # 음성 인식 (기기 내장 STT)
+  speech_to_text: ^6.6.2
 
   # 보안: SHA256 해시 검증
   crypto: ^3.0.3

@@ -3,7 +3,7 @@
     <!-- 번역 모델 / Vosk 모델 첫 실행 시 다운로드 -->
     <uses-permission android:name="android.permission.INTERNET"/>
 
-    <!-- Vosk 음성 인식 — RECORD_AUDIO 만 필요, MODIFY_AUDIO_SETTINGS 불필요 -->
+    <!-- 음성 인식 (speech_to_text) -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
 
     <!-- OCR — 카메라 촬영 및 갤러리 접근 -->

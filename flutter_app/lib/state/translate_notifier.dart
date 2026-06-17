@@ -1,5 +1,3 @@
-import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -49,8 +47,6 @@ class TranslateNotifier extends ChangeNotifier {
   // 현재 입력 유형 추적 (데이터 수집용)
   String _currentInputType = 'text';
 
-  StreamSubscription<String>? _partialSub;
-  StreamSubscription<String>? _resultSub;
 
   // ── 언어 전환 ─────────────────────────────────────────────────
   void swapLanguages() {
@@ -189,39 +185,33 @@ class TranslateNotifier extends ChangeNotifier {
     voiceState        = VoiceState.recording;
     notifyListeners();
 
-    final service = await stt.startListening();
-
-    _partialSub = service.onPartial().listen((json) {
-      final text = (jsonDecode(json)['partial'] as String?) ?? '';
-      inputText = text;
-      onSttText?.call(text);
-      notifyListeners();
-    });
-
-    _resultSub = service.onResult().listen((json) {
-      final text = (jsonDecode(json)['text'] as String?) ?? '';
-      if (text.isNotEmpty) {
+    await stt.startListening(
+      langCode: _src.code,
+      onPartial: (text) {
         inputText = text;
         onSttText?.call(text);
         notifyListeners();
-      }
-    });
+      },
+      onResult: (text) {
+        final normalized = TextNormalizer.normalize(text, langCode: _src.code);
+        inputText      = normalized;
+        recognizedText = normalized;
+        onSttText?.call(normalized);
+        voiceState = VoiceState.idle;
+        notifyListeners();
+        if (normalized.isNotEmpty) runTranslation(context);
+      },
+    );
   }
 
   Future<void> _stopRecording(BuildContext context) async {
-    await _partialSub?.cancel();
-    await _resultSub?.cancel();
-    _partialSub = null;
-    _resultSub  = null;
     await SttService.instance.stopListening();
-
     final normalized = TextNormalizer.normalize(inputText, langCode: _src.code);
     inputText      = normalized;
     recognizedText = normalized;
     onSttText?.call(normalized);
     voiceState = VoiceState.idle;
     notifyListeners();
-
     if (normalized.isNotEmpty) await runTranslation(context);
   }
 
@@ -275,8 +265,7 @@ class TranslateNotifier extends ChangeNotifier {
 
   @override
   void dispose() {
-    _partialSub?.cancel();
-    _resultSub?.cancel();
+    SttService.instance.dispose();
     super.dispose();
   }
 }
