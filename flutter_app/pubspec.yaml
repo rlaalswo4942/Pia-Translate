@@ -33,6 +33,12 @@ dependencies:
   # 보안: SHA256 해시 검증
   crypto: ^3.0.3
 
+  # OCR — 이미지 내 텍스트 인식 (오프라인, ML Kit)
+  google_mlkit_text_recognition: ^0.13.1
+
+  # 이미지 입력 — 카메라 촬영 / 갤러리 선택
+  image_picker: ^1.1.2
+
   # 클립보드
   flutter_clipboard_manager: ^0.0.1+1
   # 대안: clipboard: ^0.1.3

@@ -1,11 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import '../core/config.dart';
 import '../core/languages.dart';
 import '../services/model_manager.dart';
+import '../services/ocr_service.dart';
 import '../services/stt_service.dart';
 import '../services/text_normalizer.dart';
 import '../services/tts_service.dart';
@@ -13,6 +16,9 @@ import '../services/translator.dart' as tr;
 
 // ── 음성 녹음 상태 ────────────────────────────────────────────────
 enum VoiceState { idle, downloadingModel, recording }
+
+// ── OCR 처리 상태 ────────────────────────────────────────────────
+enum OcrState { idle, processing }
 
 // ── 상태 관리 ────────────────────────────────────────────────────
 class TranslateState extends ChangeNotifier {
@@ -22,9 +28,11 @@ class TranslateState extends ChangeNotifier {
   Language get src => _src;
   Language get dst => _dst;
 
-  String inputText     = '';
-  String recognizedText = ''; // STT 정규화 결과 — 화면 표기용
-  String outputText    = '';
+  String inputText      = '';
+  String recognizedText = ''; // STT 정규화 결과 — 화면 표기용 (파란 카드)
+  String ocrText        = ''; // OCR 인식 결과 — 화면 표기용 (초록 카드)
+  String ocrImagePath   = ''; // OCR 원본 이미지 경로 (썸네일용)
+  String outputText     = '';
 
   bool isTranslating  = false;
   bool isDownloading  = false;
@@ -33,7 +41,9 @@ class TranslateState extends ChangeNotifier {
   String? errorMessage;
 
   VoiceState voiceState = VoiceState.idle;
+  OcrState   ocrState   = OcrState.idle;
   bool get isRecording  => voiceState == VoiceState.recording;
+  bool get isOcrRunning => ocrState == OcrState.processing;
 
   // home_screen 의 TextEditingController 동기화 콜백
   void Function(String)? onSttText;
@@ -60,11 +70,65 @@ class TranslateState extends ChangeNotifier {
 
   void clearAll(TextEditingController ctrl) {
     ctrl.clear();
-    inputText     = '';
+    inputText      = '';
     recognizedText = '';
-    outputText    = '';
-    errorMessage  = null;
+    ocrText        = '';
+    ocrImagePath   = '';
+    outputText     = '';
+    errorMessage   = null;
     notifyListeners();
+  }
+
+  // ── 이미지 OCR ───────────────────────────────────────────────
+  Future<void> pickAndOcr(BuildContext context, ImageSource source) async {
+    final picker = ImagePicker();
+    XFile? image;
+    try {
+      image = await picker.pickImage(
+        source: source,
+        imageQuality: 90,
+        maxWidth: 2048,
+        maxHeight: 2048,
+      );
+    } catch (e) {
+      errorMessage = '이미지 접근 권한이 필요합니다: $e';
+      notifyListeners();
+      return;
+    }
+    if (image == null) return;
+
+    ocrState    = OcrState.processing;
+    errorMessage = null;
+    notifyListeners();
+
+    try {
+      final rawText = await OcrService.instance.recognize(image.path, _src.code);
+      if (rawText.isEmpty) {
+        errorMessage = '이미지에서 텍스트를 찾지 못했습니다.\n다른 이미지를 선택해 보세요.';
+        ocrState = OcrState.idle;
+        notifyListeners();
+        return;
+      }
+
+      final normalized = TextNormalizer.normalize(rawText, langCode: _src.code);
+      ocrText      = normalized;
+      ocrImagePath = image.path;
+      inputText    = normalized;
+      recognizedText = ''; // STT 카드는 숨김
+      onSttText?.call(normalized);
+
+      ocrState = OcrState.idle;
+      notifyListeners();
+
+      // OCR 완료 후 자동 번역
+      if (normalized.isNotEmpty) {
+        await runTranslation(context);
+      }
+    } catch (e) {
+      errorMessage = 'OCR 오류: $e';
+      ocrState     = OcrState.idle;
+      notifyListeners();
+    }
   }
 
   // ── 텍스트 번역 ──────────────────────────────────────────────
@@ -441,9 +505,11 @@ class _TranslateBody extends StatelessWidget {
                   Text('${inputController.text.length}자',
                       style: const TextStyle(color: Colors.grey, fontSize: 12)),
                 const Spacer(),
+                _ImageButton(state: state),
+                const SizedBox(width: 4),
                 _MicButton(state: state),
                 const SizedBox(width: 8),
-                if (!state.isRecording)
+                if (!state.isRecording && !state.isOcrRunning)
                   ElevatedButton.icon(
                     onPressed: state.isTranslating
                         ? null
@@ -470,15 +536,34 @@ class _TranslateBody extends StatelessWidget {
 
       const SizedBox(height: 12),
 
+      // ── OCR 처리 중 표시 ────────────────────────────────────
+      if (state.isOcrRunning)
+        const _OcrLoadingCard(),
+
+      if (state.isOcrRunning) const SizedBox(height: 12),
+
+      // ── OCR 인식 결과 카드 (이미지 입력 시에만 표시) ─────────
+      if (state.ocrText.isNotEmpty && !state.isOcrRunning)
+        _OcrCard(
+          text: state.ocrText,
+          imagePath: state.ocrImagePath,
+          flag: state.src.flag,
+          langName: state.src.name,
+        ),
+
+      if (state.ocrText.isNotEmpty && !state.isOcrRunning)
+        const SizedBox(height: 12),
+
       // ── 음성 인식 결과 카드 (음성 입력 시에만 표시) ──────────
-      if (state.recognizedText.isNotEmpty)
+      if (state.recognizedText.isNotEmpty && state.ocrText.isEmpty)
         _RecognizedCard(
           text: state.recognizedText,
           flag: state.src.flag,
           langName: state.src.name,
         ),
 
-      if (state.recognizedText.isNotEmpty) const SizedBox(height: 12),
+      if (state.recognizedText.isNotEmpty && state.ocrText.isEmpty)
+        const SizedBox(height: 12),
 
       // ── 오류 메시지 ─────────────────────────────────────────
       if (state.errorMessage != null)
@@ -594,6 +679,176 @@ class _RecognizedCard extends StatelessWidget {
             height: 1.5,
             color: Color(0xFF1A1A2E),
           ),
+        ),
+      ],
+    ),
+  );
+}
+
+// ── 이미지 버튼 ───────────────────────────────────────────────────
+class _ImageButton extends StatelessWidget {
+  final TranslateState state;
+  const _ImageButton({required this.state});
+
+  @override
+  Widget build(BuildContext context) {
+    final busy = state.isTranslating || state.isOcrRunning ||
+        state.voiceState != VoiceState.idle;
+    return Material(
+      color: const Color(0xFF2E7D32),
+      borderRadius: BorderRadius.circular(24),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(24),
+        onTap: busy ? null : () => _showSourcePicker(context),
+        child: Padding(
+          padding: const EdgeInsets.all(10),
+          child: state.isOcrRunning
+              ? const SizedBox(
+                  width: 24, height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+              : const Icon(Icons.image_search_rounded, color: Colors.white, size: 24),
+        ),
+      ),
+    );
+  }
+
+  void _showSourcePicker(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            Container(
+              width: 40, height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey.shade300,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text('이미지 선택', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            ListTile(
+              leading: const Icon(Icons.camera_alt_outlined, color: Color(0xFF2E7D32)),
+              title: const Text('카메라로 촬영'),
+              onTap: () {
+                Navigator.pop(context);
+                state.pickAndOcr(context, ImageSource.camera);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined, color: Color(0xFF2E7D32)),
+              title: const Text('갤러리에서 선택'),
+              onTap: () {
+                Navigator.pop(context);
+                state.pickAndOcr(context, ImageSource.gallery);
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── OCR 처리 중 카드 ──────────────────────────────────────────────
+class _OcrLoadingCard extends StatelessWidget {
+  const _OcrLoadingCard();
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(
+      color: const Color(0xFFE8F5E9),
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: const Color(0xFFA5D6A7), width: 1),
+    ),
+    child: const Row(
+      children: [
+        SizedBox(
+          width: 20, height: 20,
+          child: CircularProgressIndicator(
+              strokeWidth: 2, color: Color(0xFF2E7D32)),
+        ),
+        SizedBox(width: 12),
+        Text('이미지 텍스트 인식 중...', style: TextStyle(color: Color(0xFF2E7D32))),
+      ],
+    ),
+  );
+}
+
+// ── OCR 인식 결과 카드 ────────────────────────────────────────────
+class _OcrCard extends StatelessWidget {
+  final String text;
+  final String imagePath;
+  final String flag;
+  final String langName;
+
+  const _OcrCard({
+    required this.text,
+    required this.imagePath,
+    required this.flag,
+    required this.langName,
+  });
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(
+      color: const Color(0xFFE8F5E9),
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: const Color(0xFFA5D6A7), width: 1),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Icon(Icons.image_search_rounded, size: 15, color: Color(0xFF2E7D32)),
+            const SizedBox(width: 6),
+            Text(
+              '$flag $langName — 이미지 인식됨',
+              style: const TextStyle(
+                color: Color(0xFF2E7D32),
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 이미지 썸네일
+            if (imagePath.isNotEmpty)
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.file(
+                  File(imagePath),
+                  width: 72, height: 72,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => const SizedBox(),
+                ),
+              ),
+            if (imagePath.isNotEmpty) const SizedBox(width: 12),
+            // 인식된 텍스트
+            Expanded(
+              child: Text(
+                text,
+                style: const TextStyle(
+                  fontSize: 15,
+                  height: 1.5,
+                  color: Color(0xFF1A1A2E),
+                ),
+              ),
+            ),
+          ],
         ),
       ],
     ),
