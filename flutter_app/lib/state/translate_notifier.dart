@@ -151,11 +151,11 @@ class TranslateNotifier extends ChangeNotifier {
     if (voiceState == VoiceState.recording) {
       await _stopRecording(context);
     } else if (voiceState == VoiceState.idle) {
-      await _startRecording();
+      await _startRecording(context);
     }
   }
 
-  Future<void> _startRecording() async {
+  Future<void> _startRecording(BuildContext context) async {
     final stt = SttService.instance;
     if (!stt.isModelLoaded) {
       voiceState       = VoiceState.downloadingModel;
