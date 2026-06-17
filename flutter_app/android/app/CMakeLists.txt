@@ -14,6 +14,7 @@ FetchContent_Declare(
 # 공유 라이브러리 빌드 비활성화 (정적 링크만 사용)
 set(SPM_ENABLE_SHARED        OFF CACHE BOOL "" FORCE)
 set(SPM_BUILD_TEST           OFF CACHE BOOL "" FORCE)
+set(SPM_BUILD_APPS           OFF CACHE BOOL "" FORCE)
 set(SPM_USE_EXTERNAL_ABSL    OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(sentencepiece)
