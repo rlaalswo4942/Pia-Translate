@@ -46,6 +46,11 @@ dependencies:
   # 공유
   share_plus: ^9.0.0
 
+  # Pia 학습 데이터 수집 — 로컬 SQLite 저장 + 동의 관리
+  sqflite: ^2.3.3
+  shared_preferences: ^2.2.3
+  uuid: ^4.4.0
+
   cupertino_icons: ^1.0.6
 
 dev_dependencies:

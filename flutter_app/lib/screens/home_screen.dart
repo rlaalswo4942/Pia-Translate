@@ -1,283 +1,16 @@
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import '../core/config.dart';
-import '../core/languages.dart';
-import '../services/model_manager.dart';
-import '../services/ocr_service.dart';
-import '../services/stt_service.dart';
-import '../services/text_normalizer.dart';
-import '../services/tts_service.dart';
-import '../services/translator.dart' as tr;
+import '../state/translate_notifier.dart';
+import '../widgets/language_bar.dart';
+import '../widgets/mic_button.dart';
+import '../widgets/image_button.dart';
+import '../widgets/recognized_card.dart';
+import '../widgets/ocr_card.dart';
+import '../widgets/result_card.dart';
+import '../widgets/download_progress.dart';
+import '../widgets/model_manager_sheet.dart';
 
-// ── 음성 녹음 상태 ────────────────────────────────────────────────
-enum VoiceState { idle, downloadingModel, recording }
-
-// ── OCR 처리 상태 ────────────────────────────────────────────────
-enum OcrState { idle, processing }
-
-// ── 상태 관리 ────────────────────────────────────────────────────
-class TranslateState extends ChangeNotifier {
-  Language _src = kSupportedLanguages[0]; // 한국어
-  Language _dst = kSupportedLanguages[1]; // 영어
-
-  Language get src => _src;
-  Language get dst => _dst;
-
-  String inputText      = '';
-  String recognizedText = ''; // STT 정규화 결과 — 화면 표기용 (파란 카드)
-  String ocrText        = ''; // OCR 인식 결과 — 화면 표기용 (초록 카드)
-  String ocrImagePath   = ''; // OCR 원본 이미지 경로 (썸네일용)
-  String outputText     = '';
-
-  bool isTranslating  = false;
-  bool isDownloading  = false;
-  String downloadStatus    = '';
-  double downloadProgress  = 0.0;
-  String? errorMessage;
-
-  VoiceState voiceState = VoiceState.idle;
-  OcrState   ocrState   = OcrState.idle;
-  bool get isRecording  => voiceState == VoiceState.recording;
-  bool get isOcrRunning => ocrState == OcrState.processing;
-
-  // home_screen 의 TextEditingController 동기화 콜백
-  void Function(String)? onSttText;
-
-  StreamSubscription<String>? _partialSub;
-  StreamSubscription<String>? _resultSub;
-
-  void swapLanguages() {
-    final tmp = _src; _src = _dst; _dst = tmp;
-    final tmpT = inputText; inputText = outputText; outputText = tmpT;
-    recognizedText = '';
-    notifyListeners();
-  }
-
-  void setSrc(Language l) {
-    if (l.code == _dst.code) swapLanguages();
-    else { _src = l; notifyListeners(); }
-  }
-
-  void setDst(Language l) {
-    if (l.code == _src.code) swapLanguages();
-    else { _dst = l; notifyListeners(); }
-  }
-
-  void clearAll(TextEditingController ctrl) {
-    ctrl.clear();
-    inputText      = '';
-    recognizedText = '';
-    ocrText        = '';
-    ocrImagePath   = '';
-    outputText     = '';
-    errorMessage   = null;
-    notifyListeners();
-  }
-
-  // ── 이미지 OCR ───────────────────────────────────────────────
-  Future<void> pickAndOcr(BuildContext context, ImageSource source) async {
-    final picker = ImagePicker();
-    XFile? image;
-    try {
-      image = await picker.pickImage(
-        source: source,
-        imageQuality: 90,
-        maxWidth: 2048,
-        maxHeight: 2048,
-      );
-    } catch (e) {
-      errorMessage = '이미지 접근 권한이 필요합니다: $e';
-      notifyListeners();
-      return;
-    }
-    if (image == null) return;
-
-    ocrState    = OcrState.processing;
-    errorMessage = null;
-    notifyListeners();
-
-    try {
-      final rawText = await OcrService.instance.recognize(image.path, _src.code);
-      if (rawText.isEmpty) {
-        errorMessage = '이미지에서 텍스트를 찾지 못했습니다.\n다른 이미지를 선택해 보세요.';
-        ocrState = OcrState.idle;
-        notifyListeners();
-        return;
-      }
-
-      final normalized = TextNormalizer.normalize(rawText, langCode: _src.code);
-      ocrText      = normalized;
-      ocrImagePath = image.path;
-      inputText    = normalized;
-      recognizedText = ''; // STT 카드는 숨김
-      onSttText?.call(normalized);
-
-      ocrState = OcrState.idle;
-      notifyListeners();
-
-      // OCR 완료 후 자동 번역
-      if (normalized.isNotEmpty) {
-        await runTranslation(context);
-      }
-    } catch (e) {
-      errorMessage = 'OCR 오류: $e';
-      ocrState     = OcrState.idle;
-      notifyListeners();
-    }
-  }
-
-  // ── 텍스트 번역 ──────────────────────────────────────────────
-  Future<void> runTranslation(BuildContext context) async {
-    if (inputText.trim().isEmpty) return;
-
-    final mm    = ModelManager.instance;
-    final route = translationRoute(_src.code, _dst.code);
-
-    for (final model in route) {
-      if (!await mm.isDownloaded(model)) {
-        await _downloadTranslationModels(route, mm);
-        break;
-      }
-    }
-
-    isTranslating = true;
-    errorMessage  = null;
-    notifyListeners();
-
-    try {
-      outputText = await tr.translate(
-        text:    inputText,
-        srcLang: _src.code,
-        dstLang: _dst.code,
-      );
-      // TTS 훅 — isAvailable 이 true 가 되면 자동으로 읽어줌
-      TtsService.instance.speak(outputText, _dst.code);
-    } catch (e) {
-      errorMessage = '번역 오류: $e';
-      outputText   = '';
-    } finally {
-      isTranslating = false;
-      notifyListeners();
-    }
-  }
-
-  Future<void> _downloadTranslationModels(
-      List<String> models, ModelManager mm) async {
-    isDownloading = true;
-    notifyListeners();
-    mm.onProgress = (name, prog) {
-      downloadStatus   = '$name 다운로드 중...';
-      downloadProgress = prog;
-      notifyListeners();
-    };
-    try {
-      await mm.ensureModels(models);
-    } catch (e) {
-      errorMessage = '모델 다운로드 실패: $e\n\nconfig.dart의 modelBaseUrl을 확인하세요.';
-      notifyListeners();
-    } finally {
-      isDownloading = false;
-      mm.onProgress = null;
-      notifyListeners();
-    }
-  }
-
-  // ── 음성 인식 ────────────────────────────────────────────────
-  Future<void> toggleRecording(BuildContext context) async {
-    if (voiceState == VoiceState.recording) {
-      await _stopRecording(context);
-    } else if (voiceState == VoiceState.idle) {
-      await _startRecording();
-    }
-  }
-
-  Future<void> _startRecording() async {
-    final stt = SttService.instance;
-
-    if (!stt.isModelLoaded) {
-      voiceState       = VoiceState.downloadingModel;
-      downloadStatus   = '음성 모델 준비 중...';
-      downloadProgress = 0.0;
-      notifyListeners();
-      try {
-        await stt.ensureModel(onProgress: (prog) {
-          downloadProgress = prog;
-          downloadStatus   = '음성 모델 다운로드 ${(prog * 100).round()}%';
-          notifyListeners();
-        });
-      } catch (e) {
-        errorMessage = '음성 모델 다운로드 실패: $e';
-        voiceState   = VoiceState.idle;
-        notifyListeners();
-        return;
-      }
-    }
-
-    inputText     = '';
-    recognizedText = '';
-    outputText    = '';
-    errorMessage  = null;
-    voiceState    = VoiceState.recording;
-    notifyListeners();
-
-    final service = await stt.startListening();
-
-    // 중간 인식 결과 → 입력란 실시간 반영
-    _partialSub = service.onPartial().listen((json) {
-      final text = (jsonDecode(json)['partial'] as String?) ?? '';
-      inputText = text;
-      onSttText?.call(text);
-      notifyListeners();
-    });
-
-    // 최종 확정 결과 (무음 구간 감지 시 Vosk 자동 emit)
-    _resultSub = service.onResult().listen((json) {
-      final text = (jsonDecode(json)['text'] as String?) ?? '';
-      if (text.isNotEmpty) {
-        inputText = text;
-        onSttText?.call(text);
-        notifyListeners();
-      }
-    });
-  }
-
-  Future<void> _stopRecording(BuildContext context) async {
-    await _partialSub?.cancel();
-    await _resultSub?.cancel();
-    _partialSub = null;
-    _resultSub  = null;
-
-    await SttService.instance.stopListening();
-
-    // ① 인식 결과 정규화 (필러 제거, 공백 정리)
-    final normalized = TextNormalizer.normalize(inputText, langCode: _src.code);
-    inputText      = normalized;
-    recognizedText = normalized;   // 화면 표기용 카드에 사용
-    onSttText?.call(normalized);
-
-    voiceState = VoiceState.idle;
-    notifyListeners();
-
-    // ② 정규화된 텍스트로 번역 시작
-    if (normalized.isNotEmpty) {
-      await runTranslation(context);
-    }
-  }
-
-  @override
-  void dispose() {
-    _partialSub?.cancel();
-    _resultSub?.cancel();
-    super.dispose();
-  }
-}
-
-// ── 메인 화면 ─────────────────────────────────────────────────────
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
   @override
@@ -285,288 +18,188 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final _inputController = TextEditingController();
+  final _inputCtrl = TextEditingController();
 
   @override
   void dispose() {
-    _inputController.dispose();
+    _inputCtrl.dispose();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (_) => TranslateState(),
-      child: Consumer<TranslateState>(
-        builder: (ctx, state, _) {
-          // STT 결과 → 컨트롤러 동기화
-          state.onSttText = (text) {
-            if (_inputController.text != text) {
-              _inputController.text = text;
-              _inputController.selection = TextSelection.fromPosition(
-                TextPosition(offset: text.length),
-              );
-            }
-          };
+  Widget build(BuildContext context) => ChangeNotifierProvider(
+    create: (_) => TranslateNotifier(),
+    child: Consumer<TranslateNotifier>(
+      builder: (ctx, n, _) {
+        // STT/OCR 결과 → 텍스트 필드 동기화
+        n.onSttText = (text) {
+          if (_inputCtrl.text != text) {
+            _inputCtrl.text = text;
+            _inputCtrl.selection =
+                TextSelection.fromPosition(TextPosition(offset: text.length));
+          }
+        };
 
-          final showDownload = state.isDownloading ||
-              state.voiceState == VoiceState.downloadingModel;
+        final showDownload =
+            n.isDownloading || n.voiceState == VoiceState.downloadingModel;
 
-          return Scaffold(
-            backgroundColor: const Color(0xFFF5F7FA),
-            appBar: _buildAppBar(ctx, state),
-            body: Column(
-              children: [
-                _LanguageBar(state: state),
-                Expanded(
-                  child: showDownload
-                      ? _DownloadProgress(state: state)
-                      : _TranslateBody(
-                          state: state,
-                          inputController: _inputController,
-                        ),
+        return Scaffold(
+          backgroundColor: const Color(0xFFF5F7FA),
+          appBar: AppBar(
+            title: const Text('Pia 번역',
+                style: TextStyle(fontWeight: FontWeight.bold)),
+            backgroundColor: const Color(0xFF1E2A3A),
+            foregroundColor: Colors.white,
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.storage_outlined),
+                tooltip: '모델 관리',
+                onPressed: () => showModalBottomSheet(
+                  context: ctx,
+                  isScrollControlled: true,
+                  shape: const RoundedRectangleBorder(
+                      borderRadius:
+                          BorderRadius.vertical(top: Radius.circular(20))),
+                  builder: (_) => const ModelManagerSheet(),
                 ),
-              ],
+              ),
+            ],
+          ),
+          body: Column(children: [
+            LanguageBar(state: n),
+            Expanded(
+              child: showDownload
+                  ? DownloadProgress(state: n)
+                  : _TranslateBody(n: n, inputCtrl: _inputCtrl),
             ),
-          );
-        },
-      ),
-    );
-  }
-
-  AppBar _buildAppBar(BuildContext ctx, TranslateState state) => AppBar(
-    title: const Text('Pia 번역', style: TextStyle(fontWeight: FontWeight.bold)),
-    backgroundColor: const Color(0xFF1E2A3A),
-    foregroundColor: Colors.white,
-    actions: [
-      IconButton(
-        icon: const Icon(Icons.storage_outlined),
-        tooltip: '모델 관리',
-        onPressed: () => _showModelManager(ctx),
-      ),
-    ],
-  );
-
-  void _showModelManager(BuildContext ctx) {
-    showModalBottomSheet(
-      context: ctx,
-      builder: (_) => const _ModelManagerSheet(),
-    );
-  }
-}
-
-// ── 언어 선택 바 ──────────────────────────────────────────────────
-class _LanguageBar extends StatelessWidget {
-  final TranslateState state;
-  const _LanguageBar({required this.state});
-
-  @override
-  Widget build(BuildContext context) => Container(
-    color: const Color(0xFF1E2A3A),
-    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-    child: Row(
-      children: [
-        Expanded(child: _LangButton(lang: state.src, onTap: () => _pick(context, true))),
-        IconButton(
-          icon: const Icon(Icons.swap_horiz, color: Colors.white70, size: 28),
-          onPressed: state.swapLanguages,
-        ),
-        Expanded(child: _LangButton(lang: state.dst, onTap: () => _pick(context, false))),
-      ],
-    ),
-  );
-
-  Future<void> _pick(BuildContext ctx, bool isSrc) async {
-    final picked = await showDialog<Language>(
-      context: ctx,
-      builder: (_) => _LangPickerDialog(
-        current: isSrc ? state.src : state.dst,
-        exclude: isSrc ? state.dst.code : state.src.code,
-      ),
-    );
-    if (picked != null) {
-      isSrc ? state.setSrc(picked) : state.setDst(picked);
-    }
-  }
-}
-
-class _LangButton extends StatelessWidget {
-  final Language lang;
-  final VoidCallback onTap;
-  const _LangButton({required this.lang, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) => InkWell(
-    onTap: onTap,
-    borderRadius: BorderRadius.circular(8),
-    child: Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Text(lang.flag, style: const TextStyle(fontSize: 20)),
-          const SizedBox(width: 8),
-          Text(lang.name,
-              style: const TextStyle(color: Colors.white, fontSize: 15,
-                  fontWeight: FontWeight.w600)),
-          const SizedBox(width: 4),
-          const Icon(Icons.arrow_drop_down, color: Colors.white54, size: 20),
-        ],
-      ),
+          ]),
+        );
+      },
     ),
   );
 }
 
-class _LangPickerDialog extends StatelessWidget {
-  final Language current;
-  final String exclude;
-  const _LangPickerDialog({required this.current, required this.exclude});
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: const Text('언어 선택'),
-    content: Column(
-      mainAxisSize: MainAxisSize.min,
-      children: kSupportedLanguages
-          .where((l) => l.code != exclude)
-          .map((l) => ListTile(
-                leading: Text(l.flag, style: const TextStyle(fontSize: 24)),
-                title: Text(l.name),
-                subtitle: Text(l.nameEn),
-                selected: l.code == current.code,
-                onTap: () => Navigator.pop(context, l),
-              ))
-          .toList(),
-    ),
-  );
-}
-
-// ── 번역 본문 ─────────────────────────────────────────────────────
+// ── 번역 본문 (얇은 조립 레이어) ─────────────────────────────────────
 class _TranslateBody extends StatelessWidget {
-  final TranslateState state;
-  final TextEditingController inputController;
-  const _TranslateBody({required this.state, required this.inputController});
+  final TranslateNotifier n;
+  final TextEditingController inputCtrl;
+  const _TranslateBody({required this.n, required this.inputCtrl});
 
   @override
   Widget build(BuildContext context) => ListView(
     padding: const EdgeInsets.all(16),
     children: [
 
-      // ── 입력 카드 ───────────────────────────────────────────
-      _card(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Text('${state.src.flag} ${state.src.name}',
-                    style: const TextStyle(color: Colors.grey, fontSize: 13)),
-                const Spacer(),
-                if (state.inputText.isNotEmpty && !state.isRecording)
-                  IconButton(
-                    icon: const Icon(Icons.clear, size: 18),
-                    color: Colors.grey,
-                    onPressed: () => state.clearAll(inputController),
-                  ),
-              ],
-            ),
-            TextField(
-              controller: inputController,
-              maxLines: null,
-              minLines: 4,
-              maxLength: AppConfig.maxInputChars,
-              style: TextStyle(
+      // ── 입력 카드 ────────────────────────────────────────────
+      _card(child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Text('${n.src.flag} ${n.src.name}',
+                style: const TextStyle(color: Colors.grey, fontSize: 13)),
+            const Spacer(),
+            if (n.inputText.isNotEmpty && !n.isRecording)
+              IconButton(
+                icon: const Icon(Icons.clear, size: 18),
+                color: Colors.grey,
+                onPressed: () => n.clearAll(inputCtrl),
+              ),
+          ]),
+          TextField(
+            controller: inputCtrl,
+            maxLines: null,
+            minLines: 4,
+            maxLength: AppConfig.maxInputChars,
+            style: TextStyle(
                 fontSize: 18,
-                color: state.isRecording ? Colors.grey.shade400 : Colors.black87,
-              ),
-              decoration: InputDecoration(
-                hintText: state.isRecording
-                    ? '듣는 중...'
-                    : '${state.src.name}로 입력하세요...',
-                border: InputBorder.none,
-                counterStyle: const TextStyle(fontSize: 11, color: Colors.grey),
-              ),
-              enabled: !state.isRecording,
-              onChanged: (v) {
-                state.inputText = v;
-                // 수동 입력 시 음성 인식 결과 카드 제거
-                if (state.recognizedText.isNotEmpty) {
-                  state.recognizedText = '';
-                  state.notifyListeners();
-                }
-              },
-              textInputAction: TextInputAction.newline,
+                color:
+                    n.isRecording ? Colors.grey.shade400 : Colors.black87),
+            decoration: InputDecoration(
+              hintText: n.isRecording
+                  ? '듣는 중...'
+                  : '${n.src.name}로 입력하세요...',
+              border: InputBorder.none,
+              counterStyle:
+                  const TextStyle(fontSize: 11, color: Colors.grey),
             ),
-            const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                if (!state.isRecording)
-                  Text('${inputController.text.length}자',
-                      style: const TextStyle(color: Colors.grey, fontSize: 12)),
-                const Spacer(),
-                _ImageButton(state: state),
-                const SizedBox(width: 4),
-                _MicButton(state: state),
-                const SizedBox(width: 8),
-                if (!state.isRecording && !state.isOcrRunning)
-                  ElevatedButton.icon(
-                    onPressed: state.isTranslating
-                        ? null
-                        : () => state.runTranslation(context),
-                    icon: state.isTranslating
-                        ? const SizedBox(
-                            width: 16, height: 16,
-                            child: CircularProgressIndicator(
-                                strokeWidth: 2, color: Colors.white))
-                        : const Icon(Icons.translate, size: 18),
-                    label: Text(state.isTranslating ? '번역 중...' : '번역'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF1E2A3A),
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8)),
-                    ),
+            enabled: !n.isRecording,
+            onChanged: (v) {
+              n.inputText = v;
+              if (n.recognizedText.isNotEmpty) {
+                n.recognizedText = '';
+                n.notifyListeners();
+              }
+            },
+            textInputAction: TextInputAction.newline,
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              if (!n.isRecording)
+                Text('${inputCtrl.text.length}자',
+                    style:
+                        const TextStyle(color: Colors.grey, fontSize: 12)),
+              const Spacer(),
+              ImageButton(state: n),
+              const SizedBox(width: 4),
+              MicButton(state: n),
+              const SizedBox(width: 8),
+              if (!n.isRecording && !n.isOcrRunning)
+                ElevatedButton.icon(
+                  onPressed: n.isTranslating
+                      ? null
+                      : () => n.runTranslation(context),
+                  icon: n.isTranslating
+                      ? const SizedBox(
+                          width: 16, height: 16,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white))
+                      : const Icon(Icons.translate, size: 18),
+                  label: Text(n.isTranslating ? '번역 중...' : '번역'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF1E2A3A),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
                   ),
-              ],
-            ),
-          ],
-        ),
-      ),
+                ),
+            ],
+          ),
+        ],
+      )),
 
       const SizedBox(height: 12),
 
-      // ── OCR 처리 중 표시 ────────────────────────────────────
-      if (state.isOcrRunning)
-        const _OcrLoadingCard(),
-
-      if (state.isOcrRunning) const SizedBox(height: 12),
-
-      // ── OCR 인식 결과 카드 (이미지 입력 시에만 표시) ─────────
-      if (state.ocrText.isNotEmpty && !state.isOcrRunning)
-        _OcrCard(
-          text: state.ocrText,
-          imagePath: state.ocrImagePath,
-          flag: state.src.flag,
-          langName: state.src.name,
-        ),
-
-      if (state.ocrText.isNotEmpty && !state.isOcrRunning)
+      // ── OCR 처리 중 ───────────────────────────────────────────
+      if (n.isOcrRunning) ...[
+        const OcrLoadingCard(),
         const SizedBox(height: 12),
+      ],
 
-      // ── 음성 인식 결과 카드 (음성 입력 시에만 표시) ──────────
-      if (state.recognizedText.isNotEmpty && state.ocrText.isEmpty)
-        _RecognizedCard(
-          text: state.recognizedText,
-          flag: state.src.flag,
-          langName: state.src.name,
+      // ── OCR 결과 카드 ─────────────────────────────────────────
+      if (n.ocrText.isNotEmpty && !n.isOcrRunning) ...[
+        OcrCard(
+          text: n.ocrText,
+          imagePath: n.ocrImagePath,
+          flag: n.src.flag,
+          langName: n.src.name,
         ),
-
-      if (state.recognizedText.isNotEmpty && state.ocrText.isEmpty)
         const SizedBox(height: 12),
+      ],
 
-      // ── 오류 메시지 ─────────────────────────────────────────
-      if (state.errorMessage != null)
+      // ── STT 결과 카드 ─────────────────────────────────────────
+      if (n.recognizedText.isNotEmpty && n.ocrText.isEmpty) ...[
+        RecognizedCard(
+          text: n.recognizedText,
+          flag: n.src.flag,
+          langName: n.src.name,
+        ),
+        const SizedBox(height: 12),
+      ],
+
+      // ── 오류 메시지 ───────────────────────────────────────────
+      if (n.errorMessage != null) ...[
         Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
@@ -574,52 +207,16 @@ class _TranslateBody extends StatelessWidget {
             borderRadius: BorderRadius.circular(12),
             border: Border.all(color: Colors.red.shade200),
           ),
-          child: Text(state.errorMessage!,
-              style: TextStyle(color: Colors.red.shade800, fontSize: 13)),
+          child: Text(n.errorMessage!,
+              style:
+                  TextStyle(color: Colors.red.shade800, fontSize: 13)),
         ),
+        const SizedBox(height: 12),
+      ],
 
-      // ── 번역 결과 카드 ──────────────────────────────────────
-      if (state.outputText.isNotEmpty)
-        _card(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Text('${state.dst.flag} ${state.dst.name}',
-                      style: const TextStyle(color: Colors.grey, fontSize: 13)),
-                  const Spacer(),
-                  // TTS 버튼 — isAvailable 이 true 가 되면 활성화
-                  if (TtsService.instance.isAvailable)
-                    IconButton(
-                      icon: const Icon(Icons.volume_up_outlined, size: 20),
-                      color: const Color(0xFF1E2A3A),
-                      tooltip: '읽어주기',
-                      onPressed: () => TtsService.instance
-                          .speak(state.outputText, state.dst.code),
-                    ),
-                  IconButton(
-                    icon: const Icon(Icons.copy, size: 18),
-                    color: Colors.grey,
-                    tooltip: '복사',
-                    onPressed: () {
-                      Clipboard.setData(ClipboardData(text: state.outputText));
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                            content: Text('복사됨'),
-                            duration: Duration(seconds: 1)));
-                    },
-                  ),
-                ],
-              ),
-              const SizedBox(height: 4),
-              SelectableText(
-                state.outputText,
-                style: const TextStyle(fontSize: 18, height: 1.5),
-              ),
-            ],
-          ),
-        ),
+      // ── 번역 결과 카드 ────────────────────────────────────────
+      if (n.outputText.isNotEmpty)
+        ResultCard(text: n.outputText, lang: n.dst),
     ],
   );
 
@@ -628,405 +225,13 @@ class _TranslateBody extends StatelessWidget {
     decoration: BoxDecoration(
       color: Colors.white,
       borderRadius: BorderRadius.circular(16),
-      boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.06),
-          blurRadius: 8, offset: const Offset(0, 2))],
+      boxShadow: [
+        BoxShadow(
+            color: Colors.black.withOpacity(0.06),
+            blurRadius: 8,
+            offset: const Offset(0, 2))
+      ],
     ),
     child: child,
-  );
-}
-
-// ── 음성 인식 결과 카드 ───────────────────────────────────────────
-class _RecognizedCard extends StatelessWidget {
-  final String text;
-  final String flag;
-  final String langName;
-  const _RecognizedCard({
-    required this.text,
-    required this.flag,
-    required this.langName,
-  });
-
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.all(16),
-    decoration: BoxDecoration(
-      color: const Color(0xFFE8F4FD),
-      borderRadius: BorderRadius.circular(16),
-      border: Border.all(color: const Color(0xFFB3D9F5), width: 1),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            const Icon(Icons.mic, size: 15, color: Color(0xFF1976D2)),
-            const SizedBox(width: 6),
-            Text(
-              '$flag $langName — 인식됨',
-              style: const TextStyle(
-                color: Color(0xFF1976D2),
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Text(
-          text,
-          style: const TextStyle(
-            fontSize: 17,
-            height: 1.5,
-            color: Color(0xFF1A1A2E),
-          ),
-        ),
-      ],
-    ),
-  );
-}
-
-// ── 이미지 버튼 ───────────────────────────────────────────────────
-class _ImageButton extends StatelessWidget {
-  final TranslateState state;
-  const _ImageButton({required this.state});
-
-  @override
-  Widget build(BuildContext context) {
-    final busy = state.isTranslating || state.isOcrRunning ||
-        state.voiceState != VoiceState.idle;
-    return Material(
-      color: const Color(0xFF2E7D32),
-      borderRadius: BorderRadius.circular(24),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(24),
-        onTap: busy ? null : () => _showSourcePicker(context),
-        child: Padding(
-          padding: const EdgeInsets.all(10),
-          child: state.isOcrRunning
-              ? const SizedBox(
-                  width: 24, height: 24,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-              : const Icon(Icons.image_search_rounded, color: Colors.white, size: 24),
-        ),
-      ),
-    );
-  }
-
-  void _showSourcePicker(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 8),
-            Container(
-              width: 40, height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade300,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            const SizedBox(height: 16),
-            const Text('이미지 선택', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            ListTile(
-              leading: const Icon(Icons.camera_alt_outlined, color: Color(0xFF2E7D32)),
-              title: const Text('카메라로 촬영'),
-              onTap: () {
-                Navigator.pop(context);
-                state.pickAndOcr(context, ImageSource.camera);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_library_outlined, color: Color(0xFF2E7D32)),
-              title: const Text('갤러리에서 선택'),
-              onTap: () {
-                Navigator.pop(context);
-                state.pickAndOcr(context, ImageSource.gallery);
-              },
-            ),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ── OCR 처리 중 카드 ──────────────────────────────────────────────
-class _OcrLoadingCard extends StatelessWidget {
-  const _OcrLoadingCard();
-
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.all(16),
-    decoration: BoxDecoration(
-      color: const Color(0xFFE8F5E9),
-      borderRadius: BorderRadius.circular(16),
-      border: Border.all(color: const Color(0xFFA5D6A7), width: 1),
-    ),
-    child: const Row(
-      children: [
-        SizedBox(
-          width: 20, height: 20,
-          child: CircularProgressIndicator(
-              strokeWidth: 2, color: Color(0xFF2E7D32)),
-        ),
-        SizedBox(width: 12),
-        Text('이미지 텍스트 인식 중...', style: TextStyle(color: Color(0xFF2E7D32))),
-      ],
-    ),
-  );
-}
-
-// ── OCR 인식 결과 카드 ────────────────────────────────────────────
-class _OcrCard extends StatelessWidget {
-  final String text;
-  final String imagePath;
-  final String flag;
-  final String langName;
-
-  const _OcrCard({
-    required this.text,
-    required this.imagePath,
-    required this.flag,
-    required this.langName,
-  });
-
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.all(16),
-    decoration: BoxDecoration(
-      color: const Color(0xFFE8F5E9),
-      borderRadius: BorderRadius.circular(16),
-      border: Border.all(color: const Color(0xFFA5D6A7), width: 1),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            const Icon(Icons.image_search_rounded, size: 15, color: Color(0xFF2E7D32)),
-            const SizedBox(width: 6),
-            Text(
-              '$flag $langName — 이미지 인식됨',
-              style: const TextStyle(
-                color: Color(0xFF2E7D32),
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 10),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 이미지 썸네일
-            if (imagePath.isNotEmpty)
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: Image.file(
-                  File(imagePath),
-                  width: 72, height: 72,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => const SizedBox(),
-                ),
-              ),
-            if (imagePath.isNotEmpty) const SizedBox(width: 12),
-            // 인식된 텍스트
-            Expanded(
-              child: Text(
-                text,
-                style: const TextStyle(
-                  fontSize: 15,
-                  height: 1.5,
-                  color: Color(0xFF1A1A2E),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ],
-    ),
-  );
-}
-
-// ── 마이크 버튼 ───────────────────────────────────────────────────
-class _MicButton extends StatefulWidget {
-  final TranslateState state;
-  const _MicButton({required this.state});
-  @override
-  State<_MicButton> createState() => _MicButtonState();
-}
-
-class _MicButtonState extends State<_MicButton>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _pulse;
-
-  @override
-  void initState() {
-    super.initState();
-    _pulse = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 800),
-    )..repeat(reverse: true);
-  }
-
-  @override
-  void dispose() {
-    _pulse.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final recording = widget.state.isRecording;
-    final busy      = widget.state.isTranslating || widget.state.isDownloading;
-
-    return AnimatedBuilder(
-      animation: _pulse,
-      builder: (_, __) {
-        final scale = recording ? (1.0 + _pulse.value * 0.12) : 1.0;
-        return Transform.scale(
-          scale: scale,
-          child: Material(
-            color: recording ? Colors.red : const Color(0xFF1E2A3A),
-            borderRadius: BorderRadius.circular(24),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(24),
-              onTap: busy ? null : () => widget.state.toggleRecording(context),
-              child: Padding(
-                padding: const EdgeInsets.all(10),
-                child: Icon(
-                  recording ? Icons.stop_rounded : Icons.mic_none_rounded,
-                  color: Colors.white,
-                  size: 24,
-                ),
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-}
-
-// ── 다운로드 진행률 ───────────────────────────────────────────────
-class _DownloadProgress extends StatelessWidget {
-  final TranslateState state;
-  const _DownloadProgress({required this.state});
-
-  @override
-  Widget build(BuildContext context) => Center(
-    child: Padding(
-      padding: const EdgeInsets.all(32),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            state.voiceState == VoiceState.downloadingModel
-                ? Icons.record_voice_over_outlined
-                : Icons.download_rounded,
-            size: 56,
-            color: const Color(0xFF1E2A3A),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            state.voiceState == VoiceState.downloadingModel
-                ? '음성 인식 모델 다운로드'
-                : '번역 모델 다운로드',
-            style: Theme.of(context).textTheme.titleLarge,
-          ),
-          const SizedBox(height: 8),
-          Text(
-            state.voiceState == VoiceState.downloadingModel
-                ? '처음 한 번만 다운로드합니다 (약 370MB)'
-                : '처음 한 번만 다운로드합니다\n(언어쌍당 약 40~60MB)',
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: Colors.grey),
-          ),
-          const SizedBox(height: 24),
-          LinearProgressIndicator(
-            value: state.downloadProgress > 0 ? state.downloadProgress : null,
-            backgroundColor: Colors.grey.shade200,
-            color: const Color(0xFF1E2A3A),
-          ),
-          const SizedBox(height: 8),
-          Text(state.downloadStatus,
-              style: const TextStyle(color: Colors.grey, fontSize: 13)),
-        ],
-      ),
-    ),
-  );
-}
-
-// ── 모델 관리 시트 ────────────────────────────────────────────────
-class _ModelManagerSheet extends StatefulWidget {
-  const _ModelManagerSheet();
-  @override
-  State<_ModelManagerSheet> createState() => _ModelManagerSheetState();
-}
-
-class _ModelManagerSheetState extends State<_ModelManagerSheet> {
-  List<String> _downloaded = [];
-  double _totalMb = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    final mm     = ModelManager.instance;
-    final models = await mm.downloadedModels();
-    final mb     = await mm.totalCacheMb();
-    setState(() { _downloaded = models; _totalMb = mb; });
-  }
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.all(20),
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            const Text('모델 관리',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const Spacer(),
-            Text('${_totalMb.toStringAsFixed(0)}MB',
-                style: const TextStyle(color: Colors.grey)),
-          ],
-        ),
-        const SizedBox(height: 12),
-        if (_downloaded.isEmpty)
-          const Text('다운로드된 모델 없음', style: TextStyle(color: Colors.grey))
-        else
-          ..._downloaded.map((m) => ListTile(
-            dense: true,
-            leading: Icon(
-              m == 'vosk_ko' ? Icons.record_voice_over : Icons.translate,
-              color: Colors.green,
-              size: 20,
-            ),
-            title: Text(m == 'vosk_ko'
-                ? '음성 인식 (한국어)'
-                : m.replaceAll('_', ' → ')),
-            trailing: IconButton(
-              icon: const Icon(Icons.delete_outline, size: 20),
-              onPressed: () async {
-                await ModelManager.instance.deleteModel(m);
-                await _load();
-              },
-            ),
-          )),
-      ],
-    ),
   );
 }
