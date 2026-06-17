@@ -17,6 +17,8 @@ jobs:
   build:
     name: Android APK 빌드
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: 소스 체크아웃
