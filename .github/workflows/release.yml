@@ -68,6 +68,10 @@ jobs:
           cp /tmp/flutter_scaffold/android/app/src/main/res/values/styles.xml \
              $TARGET/app/src/main/res/values/ 2>/dev/null || true
 
+          # applicationId 보정: 스캐폴드(com.pia.pia_translate) → 실제 패키지(com.pia.translate)
+          sed -i 's/applicationId "com\.pia\.pia_translate"/applicationId "com.pia.translate"/' \
+              $TARGET/app/build.gradle
+
       - name: app/build.gradle — NDK + CMake 설정 추가
         run: |
           python3 << 'PYEOF'
