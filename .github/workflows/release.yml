@@ -37,11 +37,6 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Android NDK 설치
-        run: |
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
-            --install "ndk;26.1.10909125"
-
       - name: Flutter 빌드 시스템 파일 생성
         run: |
           # 임시 스캐폴드로 Gradle 파일 추출 (우리 소스는 건드리지 않음)
@@ -72,48 +67,7 @@ jobs:
           sed -i 's/applicationId "com\.pia\.pia_translate"/applicationId "com.pia.translate"/' \
               $TARGET/app/build.gradle
 
-      - name: app/build.gradle — NDK + CMake 설정 추가
-        run: |
-          python3 << 'PYEOF'
-          path = 'flutter_app/android/app/build.gradle'
-          with open(path) as f:
-              src = f.read()
-
-          # NDK 버전
-          if 'ndkVersion' not in src:
-              src = src.replace(
-                  'compileSdk flutter.compileSdkVersion',
-                  'ndkVersion "26.1.10909125"\n    compileSdk flutter.compileSdkVersion'
-              )
-
-          # ML Kit 제거 중 (시작 크래시 원인 격리)
-
-          # defaultConfig 내 cmake 플래그
-          if 'externalNativeBuild' not in src:
-              src = src.replace(
-                  '        versionName flutterVersionName',
-                  '        versionName flutterVersionName\n'
-                  '        externalNativeBuild {\n'
-                  '            cmake { cppFlags "-std=c++17" }\n'
-                  '        }'
-              )
-              # android 블록에 cmake 경로
-              src = src.replace(
-                  '\n    buildTypes {',
-                  '\n    externalNativeBuild {\n'
-                  '        cmake {\n'
-                  '            path "CMakeLists.txt"\n'
-                  '            version "3.31.5"\n'
-                  '        }\n'
-                  '    }\n\n    buildTypes {'
-              )
-
-          with open(path, 'w') as f:
-              f.write(src)
-          print('[OK] app/build.gradle 수정 완료')
-          PYEOF
-
-      - name: minSdk 21 강제 설정 (Vosk 최소 요구사항)
+      - name: minSdk 21 설정
         run: |
           sed -i \
             's/minSdk flutter\.minSdkVersion/minSdk 21/' \
@@ -126,7 +80,6 @@ jobs:
       - name: APK 빌드 보안 검사 — 위험 패턴 스캔
         run: |
           echo "── 하드코딩 시크릿 검사 ──"
-          # API 키, 비밀번호 패턴 탐지
           if grep -rn \
             -e 'api[_-]\?key\s*=\s*["'"'"'][A-Za-z0-9]{16,}' \
             -e 'password\s*=\s*["'"'"'][^"'"'"']{6,}' \
@@ -163,7 +116,6 @@ jobs:
           echo "[OK] APK 크기: ${SIZE_MB}MB"
           echo "[OK] APK SHA256: ${SHA256}"
           echo "sha256=${SHA256}" >> $GITHUB_OUTPUT
-          # 비정상적으로 작은 APK 차단 (5MB 미만이면 빌드 실패)
           if [ "$SIZE" -lt 5242880 ]; then
             echo "[실패] APK가 비정상적으로 작습니다 (${SIZE_MB}MB)"
             exit 1
@@ -197,20 +149,10 @@ jobs:
             ### 지원 언어
             🇰🇷 한국어 ↔ 🇺🇸 영어 · 🇯🇵 일본어 · 🇨🇳 중국어 · 🇫🇷 프랑스어
 
-            ### 주요 기능
-            - ⌨️ 텍스트 번역 (완전 오프라인)
-            - 🎤 음성 인식 후 자동 번역 (Vosk 한국어 대형 모델)
-            - 📷 이미지 텍스트 인식 후 번역 (ML Kit OCR)
-            - 보안: HTTPS 전용, Zip Slip 방지, 허용 도메인 검증, 입력 길이 제한
-            - 첫 실행 시 모델 자동 다운로드
-              - 번역 모델: 언어쌍당 ~60MB
-              - 음성 인식 모델 (한국어 대형): ~370MB
-
             ### 설치 방법
             1. 위 `app-release.apk` 다운로드 (또는 다운로드 페이지 방문)
             2. 폰 설정 → **알 수 없는 출처 앱 설치 허용**
             3. APK 파일을 열어 설치
-            4. 앱 실행 → 필요한 모델이 자동 다운로드됨
 
             ### APK 무결성
             ```
