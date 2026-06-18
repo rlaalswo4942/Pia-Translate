@@ -86,15 +86,7 @@ jobs:
                   'ndkVersion "26.1.10909125"\n    compileSdk flutter.compileSdkVersion'
               )
 
-          # ML Kit 언어별 번들 모델 추가
-          # (기본 text-recognition은 Flutter 플러그인 transitive dep으로 이미 포함)
-          mlkit_lang_deps = (
-              '    implementation "com.google.mlkit:text-recognition-korean:16.0.0"\n'
-              '    implementation "com.google.mlkit:text-recognition-japanese:16.0.0"\n'
-              '    implementation "com.google.mlkit:text-recognition-chinese:16.0.0"\n'
-          )
-          if 'text-recognition-korean' not in src:
-              src = src.replace('dependencies {', 'dependencies {\n' + mlkit_lang_deps, 1)
+          # ML Kit 제거 중 (시작 크래시 원인 격리)
 
           # defaultConfig 내 cmake 플래그
           if 'externalNativeBuild' not in src:
