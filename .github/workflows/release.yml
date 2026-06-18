@@ -86,15 +86,15 @@ jobs:
                   'ndkVersion "26.1.10909125"\n    compileSdk flutter.compileSdkVersion'
               )
 
-          # ML Kit OCR 의존성 추가 (오프라인 번들)
-          mlkit_deps = (
-              '    implementation "com.google.mlkit:text-recognition:16.0.0"\n'
+          # ML Kit 언어별 번들 모델 추가
+          # (기본 text-recognition은 Flutter 플러그인 transitive dep으로 이미 포함)
+          mlkit_lang_deps = (
               '    implementation "com.google.mlkit:text-recognition-korean:16.0.0"\n'
               '    implementation "com.google.mlkit:text-recognition-japanese:16.0.0"\n'
               '    implementation "com.google.mlkit:text-recognition-chinese:16.0.0"\n'
           )
-          if 'text-recognition' not in src:
-              src = src.replace('dependencies {', 'dependencies {\n' + mlkit_deps, 1)
+          if 'text-recognition-korean' not in src:
+              src = src.replace('dependencies {', 'dependencies {\n' + mlkit_lang_deps, 1)
 
           # defaultConfig 내 cmake 플래그
           if 'externalNativeBuild' not in src:

@@ -19,9 +19,6 @@ void main() {
 Future<void> _boot() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // OrtEnv는 번역 첫 사용 시 지연 초기화 (translator.dart)
-  // 여기서 호출 시 네이티브 라이브러리 로드가 시작 크래시를 유발할 수 있음
-
   // 이전 실행에서 Java가 기록한 크래시 로그를 MethodChannel로 가져옴
   String? prevCrash;
   try {
