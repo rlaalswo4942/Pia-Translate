@@ -75,6 +75,28 @@ jobs:
             's/minSdk flutter\.minSdkVersion/minSdk 21/' \
             flutter_app/android/app/build.gradle
 
+      - name: 진단 빌드 — 플러그인 전부 제거 (Flutter 엔진만 테스트)
+        run: |
+          # pubspec.yaml → flutter SDK만 남김 (플러그인 네이티브 코드 완전 제거)
+          cat > flutter_app/pubspec.yaml << 'EOF'
+          name: pia_translate
+          version: 1.0.0+1
+          environment:
+            sdk: ">=3.0.0 <4.0.0"
+          dependencies:
+            flutter:
+              sdk: flutter
+          flutter:
+            uses-material-design: true
+          EOF
+
+          # lib/ → main.dart만 남김 (나머지 파일들이 없는 패키지 임포트할 수 있으니)
+          find flutter_app/lib -mindepth 1 -name "*.dart" ! -name "main.dart" -delete
+          find flutter_app/lib -mindepth 1 -type d -exec rm -rf {} + 2>/dev/null || true
+
+          echo "[OK] pubspec.yaml 최소화 완료"
+          echo "[OK] lib/ 정리 완료 — main.dart 단독 빌드"
+
       - name: Flutter 의존성 설치
         working-directory: flutter_app
         run: flutter pub get
