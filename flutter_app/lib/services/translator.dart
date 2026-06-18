@@ -12,8 +12,20 @@ const _channel = MethodChannel('com.pia.translate/sentencepiece');
 
 /// 로드된 ONNX 세션 캐시 (경로 → 세션)
 final _sessionCache = <String, OrtSession>{};
+bool _ortReady = false;
+
+void _ensureOrt() {
+  if (_ortReady) return;
+  try {
+    OrtEnv.instance.init();
+    _ortReady = true;
+  } catch (e) {
+    debugPrint('OrtEnv.init failed: $e');
+  }
+}
 
 OrtSession _loadSession(String modelPath) {
+  _ensureOrt();
   return _sessionCache.putIfAbsent(modelPath, () {
     final opts = OrtSessionOptions();
     return OrtSession.fromFile(File(modelPath), opts);

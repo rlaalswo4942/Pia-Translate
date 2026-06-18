@@ -1,17 +1,46 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:onnxruntime/onnxruntime.dart';
+import 'package:flutter/services.dart';
 import 'screens/home_screen.dart';
 import 'services/data_collector.dart';
 
-Future<void> main() async {
+const _crashChannel = MethodChannel('com.pia.translate/crash');
+
+void main() {
+  FlutterError.onError = (details) {
+    debugPrint('FlutterError: ${details.exception}\n${details.stack}');
+  };
+
+  runZonedGuarded(_boot, (error, stack) {
+    debugPrint('Unhandled: $error\n$stack');
+  });
+}
+
+Future<void> _boot() async {
   WidgetsFlutterBinding.ensureInitialized();
-  OrtEnv.instance.init();
-  await DataCollector.instance.init();
-  runApp(const PiaTranslateApp());
+
+  // OrtEnv는 번역 첫 사용 시 지연 초기화 (translator.dart)
+  // 여기서 호출 시 네이티브 라이브러리 로드가 시작 크래시를 유발할 수 있음
+
+  // 이전 실행에서 Java가 기록한 크래시 로그를 MethodChannel로 가져옴
+  String? prevCrash;
+  try {
+    prevCrash = await _crashChannel.invokeMethod<String>('getCrashLog');
+  } catch (_) {}
+
+  try {
+    await DataCollector.instance.init();
+  } catch (e, st) {
+    debugPrint('DataCollector init failed: $e\n$st');
+    prevCrash ??= 'DataCollector: $e';
+  }
+
+  runApp(PiaTranslateApp(prevCrash: prevCrash));
 }
 
 class PiaTranslateApp extends StatelessWidget {
-  const PiaTranslateApp({super.key});
+  final String? prevCrash;
+  const PiaTranslateApp({super.key, this.prevCrash});
 
   @override
   Widget build(BuildContext context) => MaterialApp(
@@ -23,11 +52,75 @@ class PiaTranslateApp extends StatelessWidget {
       useMaterial3: true,
       appBarTheme: const AppBarTheme(elevation: 0, centerTitle: true),
     ),
-    home: const _ConsentGate(),
+    home: prevCrash != null
+        ? _CrashScreen(crash: prevCrash!)
+        : const _ConsentGate(),
   );
 }
 
-/// 첫 실행 시 데이터 수집 동의 게이트 — 동의 여부 저장 후 홈 이동
+/// 이전 실행 크래시 내용 표시 화면
+class _CrashScreen extends StatelessWidget {
+  final String crash;
+  const _CrashScreen({required this.crash});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('오류 정보')),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('앱 시작 중 오류가 발생했습니다.',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+            const SizedBox(height: 8),
+            const Text('아래 내용을 복사해서 개발자에게 전달해주세요.',
+                style: TextStyle(color: Colors.grey)),
+            const SizedBox(height: 16),
+            Expanded(
+              child: SingleChildScrollView(
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[100],
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: SelectableText(crash,
+                      style: const TextStyle(fontFamily: 'monospace', fontSize: 11)),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: crash));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('클립보드에 복사됨')),
+                  );
+                },
+                icon: const Icon(Icons.copy),
+                label: const Text('오류 내용 복사'),
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: TextButton(
+                onPressed: () => Navigator.of(context).pushReplacement(
+                    MaterialPageRoute(builder: (_) => const _ConsentGate())),
+                child: const Text('무시하고 계속'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _ConsentGate extends StatefulWidget {
   const _ConsentGate();
   @override
@@ -45,7 +138,6 @@ class _ConsentGateState extends State<_ConsentGate> {
 
   Future<void> _check() async {
     final dc = DataCollector.instance;
-    // 이미 동의 여부를 결정한 경우 바로 통과
     if (dc.hasAnswered) {
       _goHome();
       return;
