@@ -63,8 +63,10 @@ jobs:
           cp /tmp/flutter_scaffold/android/app/src/main/res/values/styles.xml \
              $TARGET/app/src/main/res/values/ 2>/dev/null || true
 
-          # applicationId 보정: 스캐폴드(com.pia.pia_translate) → 실제 패키지(com.pia.translate)
+          # applicationId + namespace 보정: 스캐폴드(com.pia.pia_translate) → 실제 패키지(com.pia.translate)
           sed -i 's/applicationId "com\.pia\.pia_translate"/applicationId "com.pia.translate"/' \
+              $TARGET/app/build.gradle
+          sed -i 's/namespace "com\.pia\.pia_translate"/namespace "com.pia.translate"/' \
               $TARGET/app/build.gradle
 
       - name: minSdk 21 설정
