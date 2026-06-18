@@ -90,8 +90,14 @@ class MainActivity : FlutterActivity() {
 
 /** JNI 브릿지 — sp_jni.cpp 와 연결 */
 object SentencePieceJNI {
+    private var loaded = false
     init {
-        System.loadLibrary("sp_jni")
+        try {
+            System.loadLibrary("sp_jni")
+            loaded = true
+        } catch (e: UnsatisfiedLinkError) {
+            android.util.Log.e("PiaSP", "sp_jni load failed: $e")
+        }
     }
 
     @JvmStatic
