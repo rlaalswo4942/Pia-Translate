@@ -11,7 +11,7 @@ on:
         default: 'v1.0.0'
 
 env:
-  FLUTTER_VERSION: '3.22.3'
+  FLUTTER_VERSION: '3.32.2'
 
 jobs:
   build:
