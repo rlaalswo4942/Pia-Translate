@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -130,24 +131,26 @@ class TranslateNotifier extends ChangeNotifier {
       List<String> models, ModelManager mm) async {
     isDownloading = true;
     notifyListeners();
-    int lastUpdateMs = 0;
+
+    // 콜백과 UI 업데이트를 완전히 분리:
+    // onProgress는 값만 기록하고, 500ms 타이머가 notifyListeners() 호출
+    // → 다운로드 청크 빈도에 관계없이 메인 스레드 부하 고정
+    Timer? uiTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+      notifyListeners();
+    });
+
     mm.onProgress = (name, prog) {
-      final now = DateTime.now().millisecondsSinceEpoch;
-      // 250ms(4fps)로 스로틀 — 매 청크마다 notifyListeners() 호출 시 ANR 발생
-      if (prog < 1.0 && now - lastUpdateMs < 250) return;
-      lastUpdateMs     = now;
       downloadStatus   = '$name 다운로드 중...';
       downloadProgress = prog;
-      notifyListeners();
     };
     try {
       await mm.ensureModels(models);
     } catch (e) {
       errorMessage = '모델 다운로드 실패: $e';
-      notifyListeners();
     } finally {
-      isDownloading    = false;
-      mm.onProgress    = null;
+      uiTimer.cancel();
+      isDownloading = false;
+      mm.onProgress = null;
       notifyListeners();
     }
   }
@@ -168,18 +171,22 @@ class TranslateNotifier extends ChangeNotifier {
       downloadStatus   = '음성 모델 준비 중...';
       downloadProgress = 0.0;
       notifyListeners();
+      Timer? sttTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+        notifyListeners();
+      });
       try {
         await stt.ensureModel(onProgress: (prog) {
           downloadProgress = prog;
           downloadStatus   = '음성 모델 다운로드 ${(prog * 100).round()}%';
-          notifyListeners();
         });
       } catch (e) {
         errorMessage = '음성 모델 다운로드 실패: $e';
         voiceState   = VoiceState.idle;
+        sttTimer.cancel();
         notifyListeners();
         return;
       }
+      sttTimer.cancel();
     }
 
     inputText         = '';
