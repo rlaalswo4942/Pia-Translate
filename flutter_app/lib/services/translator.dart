@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
@@ -36,6 +37,22 @@ List<int> _runOnnxIsolate(Map<String, dynamic> args) {
   final inputIds    = List<int>.from(args['inputIds'] as List);
   final maxLen      = args['maxLen'] as int;
 
+  // config.json에서 BOS/EOS 토큰 ID 결정
+  // decoder_start_token_id가 디코더 어휘 범위를 초과하는 경우(예: 65000)
+  // → 인코더 PAD 토큰을 잘못 참조한 것이므로 0(</s>)으로 대체
+  int bosId = 0;
+  int eosId = 0;
+  final configFile = File(p.join(p.dirname(encoderPath), 'config.json'));
+  if (configFile.existsSync()) {
+    try {
+      final cfg = jsonDecode(configFile.readAsStringSync()) as Map<String, dynamic>;
+      eosId = (cfg['eos_token_id'] as num?)?.toInt() ?? 0;
+      final startId = (cfg['decoder_start_token_id'] as num?)?.toInt();
+      // 디코더 어휘 크기는 보통 50000 미만 — 초과하면 인코더 PAD 오용으로 판단
+      if (startId != null && startId < 50000) bosId = startId;
+    } catch (_) {}
+  }
+
   final encoder = OrtSession.fromFile(File(encoderPath), OrtSessionOptions());
 
   final inputIdsTensor = OrtValueTensor.createTensorWithDataList(
@@ -67,8 +84,6 @@ List<int> _runOnnxIsolate(Map<String, dynamic> args) {
   for (final v in encOutputs) { v?.release(); }
 
   final decoder = OrtSession.fromFile(File(decoderPath), OrtSessionOptions());
-  const int bosId = 65000;
-  const int eosId = 0;
   final List<int> generated = [bosId];
 
   for (int step = 0; step < maxLen; step++) {
