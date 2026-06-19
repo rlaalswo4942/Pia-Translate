@@ -90,6 +90,7 @@ class TranslateNotifier extends ChangeNotifier {
     for (final model in route) {
       if (!await mm.isDownloaded(model)) {
         await _downloadTranslationModels(route, mm);
+        if (errorMessage != null) return; // 다운로드 실패 — 에러 표시 유지
         break;
       }
     }

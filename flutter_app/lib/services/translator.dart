@@ -117,6 +117,14 @@ Future<String> _translateWithModel({
   return _spDecode(tgtSpmPath, generated.sublist(1));
 }
 
+// opus-mt-en-ROMANCE 같은 다국어 모델에 목표 언어 접두사 반환
+// 언어별 단일 모델은 접두사 불필요 → 빈 문자열 반환
+String _modelLangPrefix(String modelName, String dstLang) {
+  const _romanceModels = {'en_fr', 'en_es', 'en_it', 'en_pt', 'en_ro'};
+  if (_romanceModels.contains(modelName)) return '>>$dstLang<< ';
+  return '';
+}
+
 Future<String> translate({
   required String text,
   required String srcLang,
@@ -129,8 +137,13 @@ Future<String> translate({
   final mm = ModelManager.instance;
   String current = text;
   for (final modelName in route) {
+    if (!await mm.isDownloaded(modelName)) {
+      throw Exception('번역 모델 미다운로드: $modelName — 번역 버튼을 다시 눌러 다운로드하세요.');
+    }
     final dir = await mm.modelPath(modelName);
-    current = await _translateWithModel(modelDir: dir, inputText: current);
+    // opus-mt-en-ROMANCE는 목표 언어 접두사 필요 (없으면 스페인어 등 다른 언어로 출력)
+    final input = _modelLangPrefix(modelName, dstLang) + current;
+    current = await _translateWithModel(modelDir: dir, inputText: input);
   }
   return current;
 }
