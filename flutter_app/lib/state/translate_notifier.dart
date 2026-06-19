@@ -130,7 +130,12 @@ class TranslateNotifier extends ChangeNotifier {
       List<String> models, ModelManager mm) async {
     isDownloading = true;
     notifyListeners();
+    int lastUpdateMs = 0;
     mm.onProgress = (name, prog) {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      // 250ms(4fps)로 스로틀 — 매 청크마다 notifyListeners() 호출 시 ANR 발생
+      if (prog < 1.0 && now - lastUpdateMs < 250) return;
+      lastUpdateMs     = now;
       downloadStatus   = '$name 다운로드 중...';
       downloadProgress = prog;
       notifyListeners();
