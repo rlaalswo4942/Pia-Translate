@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/services.dart';
 import 'package:onnxruntime/onnxruntime.dart';
@@ -12,7 +13,7 @@ final _sessionCache = <String, OrtSession>{};
 
 OrtSession _loadSession(String modelPath) {
   return _sessionCache.putIfAbsent(modelPath, () {
-    return OrtSession.fromFile(modelPath, OrtSessionOptions());
+    return OrtSession.fromFile(File(modelPath), OrtSessionOptions());
   });
 }
 
