@@ -47,33 +47,54 @@ jobs:
             /tmp/flutter_scaffold
 
           TARGET=flutter_app/android
+          SRC=/tmp/flutter_scaffold/android
 
-          cp /tmp/flutter_scaffold/android/build.gradle         $TARGET/
-          cp /tmp/flutter_scaffold/android/settings.gradle      $TARGET/
-          cp /tmp/flutter_scaffold/android/gradle.properties    $TARGET/
-          cp /tmp/flutter_scaffold/android/app/build.gradle     $TARGET/app/
-          cp -r /tmp/flutter_scaffold/android/gradle            $TARGET/
-          cp /tmp/flutter_scaffold/android/gradlew              $TARGET/
-          chmod +x $TARGET/gradlew
+          # Flutter 3.24+ 는 Kotlin DSL(.kts) 사용 — .kts 우선, 없으면 .gradle 복사
+          for f in build.gradle settings.gradle gradle.properties; do
+            if [ -f "$SRC/${f}.kts" ]; then
+              cp "$SRC/${f}.kts" "$TARGET/"
+            elif [ -f "$SRC/$f" ]; then
+              cp "$SRC/$f" "$TARGET/"
+            fi
+          done
+
+          if [ -f "$SRC/app/build.gradle.kts" ]; then
+            cp "$SRC/app/build.gradle.kts" "$TARGET/app/"
+          elif [ -f "$SRC/app/build.gradle" ]; then
+            cp "$SRC/app/build.gradle" "$TARGET/app/"
+          fi
+
+          cp -r "$SRC/gradle" "$TARGET/"
+          cp "$SRC/gradlew" "$TARGET/"
+          chmod +x "$TARGET/gradlew"
 
           # 기본 리소스 (아이콘, 테마)
-          cp -r /tmp/flutter_scaffold/android/app/src/main/res/mipmap-* \
-                $TARGET/app/src/main/res/ 2>/dev/null || true
-          mkdir -p $TARGET/app/src/main/res/values
-          cp /tmp/flutter_scaffold/android/app/src/main/res/values/styles.xml \
-             $TARGET/app/src/main/res/values/ 2>/dev/null || true
+          cp -r "$SRC/app/src/main/res/mipmap-"* \
+                "$TARGET/app/src/main/res/" 2>/dev/null || true
+          mkdir -p "$TARGET/app/src/main/res/values"
+          cp "$SRC/app/src/main/res/values/styles.xml" \
+             "$TARGET/app/src/main/res/values/" 2>/dev/null || true
 
-          # applicationId + namespace 보정: 스캐폴드(com.pia.pia_translate) → 실제 패키지(com.pia.translate)
-          sed -i 's/applicationId "com\.pia\.pia_translate"/applicationId "com.pia.translate"/' \
-              $TARGET/app/build.gradle
-          sed -i 's/namespace "com\.pia\.pia_translate"/namespace "com.pia.translate"/' \
-              $TARGET/app/build.gradle
+          # applicationId + namespace 보정 (Groovy DSL 및 Kotlin DSL 모두 처리)
+          for gradle_file in "$TARGET/app/build.gradle" "$TARGET/app/build.gradle.kts"; do
+            [ -f "$gradle_file" ] || continue
+            # Groovy: applicationId "com.pia.pia_translate"
+            sed -i 's/applicationId "com\.pia\.pia_translate"/applicationId "com.pia.translate"/' "$gradle_file"
+            sed -i 's/namespace "com\.pia\.pia_translate"/namespace "com.pia.translate"/' "$gradle_file"
+            # Kotlin DSL: applicationId = "com.pia.pia_translate"
+            sed -i 's/applicationId = "com\.pia\.pia_translate"/applicationId = "com.pia.translate"/' "$gradle_file"
+            sed -i 's/namespace = "com\.pia\.pia_translate"/namespace = "com.pia.translate"/' "$gradle_file"
+          done
 
       - name: minSdk 21 설정
         run: |
-          sed -i \
-            's/minSdk flutter\.minSdkVersion/minSdk 21/' \
-            flutter_app/android/app/build.gradle
+          for gradle_file in flutter_app/android/app/build.gradle flutter_app/android/app/build.gradle.kts; do
+            [ -f "$gradle_file" ] || continue
+            # Groovy DSL
+            sed -i 's/minSdk flutter\.minSdkVersion/minSdk 21/' "$gradle_file"
+            # Kotlin DSL
+            sed -i 's/minSdk = flutter\.minSdkVersion/minSdk = 21/' "$gradle_file"
+          done
 
       - name: 진단 빌드 — 플러그인 전부 제거 (Flutter 엔진만 테스트)
         run: |
