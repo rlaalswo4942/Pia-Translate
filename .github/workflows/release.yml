@@ -121,7 +121,7 @@ jobs:
             dio: ^5.4.3+1
             percent_indicator: ^4.2.3
             share_plus: ^9.0.0
-            onnxruntime: ^1.18.0
+            onnxruntime: ^1.4.1
             shared_preferences: ^2.2.3
             sqflite: ^2.3.3
             uuid: ^4.4.0
