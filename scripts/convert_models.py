@@ -18,7 +18,9 @@ OPUS-MT → ONNX INT8 변환 스크립트 (optimum 기반)
 """
 
 import gc
+import os
 import shutil
+import time
 import zipfile
 import sys
 from pathlib import Path
@@ -194,15 +196,38 @@ def convert_model(name: str, hf_id: str) -> bool:
         return False
 
 
+def convert_model_with_retry(name: str, hf_id: str, max_retries: int = 3) -> bool:
+    for attempt in range(max_retries):
+        if attempt > 0:
+            wait = 60 * attempt  # 60초, 120초 대기
+            print(f"  [재시도 {attempt}/{max_retries-1}] {wait}초 후 재시도...")
+            time.sleep(wait)
+        if convert_model(name, hf_id):
+            return True
+    return False
+
+
 def main():
     if not _check_deps():
         sys.exit(1)
+
+    # HuggingFace 토큰 (레이트 리밋 회피)
+    hf_token = os.environ.get("HF_TOKEN")
+    if hf_token:
+        try:
+            from huggingface_hub import login
+            login(token=hf_token, add_to_git_credential=False)
+            print("[OK] HuggingFace 로그인 완료")
+        except Exception as e:
+            print(f"[경고] HF 로그인 실패: {e}")
+    else:
+        print("[참고] HF_TOKEN 없음 — 레이트 리밋 시 실패 가능")
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     ZIP_DIR.mkdir(parents=True, exist_ok=True)
     print(f"\nOPUS-MT → ONNX INT8  (optimum)\n{'─'*50}")
 
-    results = {name: convert_model(name, hf_id) for name, hf_id in MODELS.items()}
+    results = {name: convert_model_with_retry(name, hf_id) for name, hf_id in MODELS.items()}
 
     ok    = sum(results.values())
     total = len(results)

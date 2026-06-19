@@ -29,7 +29,9 @@ jobs:
           pip install --upgrade pip
           pip install -r scripts/requirements.txt
 
-      - name: 모델 변환 (OPUS-MT → ONNX)
+      - name: 모델 변환 (OPUS-MT → ONNX INT8)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python scripts/convert_models.py
 
       - name: 변환 결과 확인
