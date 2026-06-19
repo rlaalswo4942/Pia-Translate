@@ -121,6 +121,7 @@ jobs:
             dio: ^5.4.3+1
             percent_indicator: ^4.2.3
             share_plus: ^9.0.0
+            onnxruntime: ^1.18.0
             shared_preferences: ^2.2.3
             sqflite: ^2.3.3
             uuid: ^4.4.0
@@ -181,6 +182,54 @@ jobs:
 
           echo "[OK] pubspec.yaml 복원 완료"
           echo "[OK] main.dart → 실제 앱으로 교체"
+
+      - name: app/build.gradle에 CMake(SentencePiece) 빌드 설정 추가
+        run: |
+          python3 - <<'PYEOF'
+          import os, re
+
+          kts   = 'flutter_app/android/app/build.gradle.kts'
+          groovy= 'flutter_app/android/app/build.gradle'
+
+          if os.path.exists(kts):
+              path, is_kts = kts, True
+          else:
+              path, is_kts = groovy, False
+
+          with open(path) as f:
+              content = f.read()
+
+          if 'externalNativeBuild' in content:
+              print('[skip] externalNativeBuild already present')
+          else:
+              if is_kts:
+                  block = '''
+              externalNativeBuild {
+                  cmake {
+                      path = file("CMakeLists.txt")
+                      version = "3.22.1"
+                  }
+              }
+          '''
+              else:
+                  block = '''
+              externalNativeBuild {
+                  cmake {
+                      path "CMakeLists.txt"
+                      version "3.22.1"
+                  }
+              }
+          '''
+              if 'buildTypes' in content:
+                  content = content.replace('    buildTypes {', block + '    buildTypes {', 1)
+              else:
+                  last = content.rfind('}')
+                  content = content[:last] + block + content[last:]
+
+              with open(path, 'w') as f:
+                  f.write(content)
+              print(f'[OK] externalNativeBuild 추가: {path}')
+          PYEOF
 
       - name: Flutter 의존성 설치
         working-directory: flutter_app

@@ -45,3 +45,8 @@ set_target_properties(sp_jni PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED YES
 )
+
+# Android 16+ 16KB 페이지 정렬 필수
+if(ANDROID)
+    target_link_options(sp_jni PRIVATE "-Wl,-z,max-page-size=16384")
+endif()
