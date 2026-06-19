@@ -106,7 +106,7 @@ jobs:
           name: pia_translate
           description: Pia 오프라인 번역 — 완전 로컬 실행, 외부 서버 불필요
           publish_to: none
-          version: 1.4.0+1
+          version: 1.5.0+1
 
           environment:
             sdk: ">=3.0.0 <4.0.0"

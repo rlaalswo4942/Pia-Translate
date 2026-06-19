@@ -39,6 +39,14 @@ MODELS = {
     "fr_en": "Helsinki-NLP/opus-mt-fr-en",
 }
 
+# 401 발생 시 시도할 대안 모델 ID (같은 아키텍처, 다른 업로드 버전)
+MODEL_FALLBACKS = {
+    "en_ko": [
+        "Helsinki-NLP/opus-mt-en-ko",
+        "Helsinki-NLP/opus-mt-tc-big-en-ko",
+    ],
+}
+
 
 def _check_deps() -> bool:
     missing = []
@@ -197,13 +205,19 @@ def convert_model(name: str, hf_id: str) -> bool:
 
 
 def convert_model_with_retry(name: str, hf_id: str, max_retries: int = 3) -> bool:
-    for attempt in range(max_retries):
-        if attempt > 0:
-            wait = 60 * attempt  # 60초, 120초 대기
-            print(f"  [재시도 {attempt}/{max_retries-1}] {wait}초 후 재시도...")
-            time.sleep(wait)
-        if convert_model(name, hf_id):
-            return True
+    candidates = MODEL_FALLBACKS.get(name, [hf_id])
+    if hf_id not in candidates:
+        candidates = [hf_id] + candidates
+
+    for model_id in candidates:
+        for attempt in range(max_retries):
+            if attempt > 0:
+                wait = 60 * attempt
+                print(f"  [재시도 {attempt}/{max_retries-1}] {wait}초 후 재시도...")
+                time.sleep(wait)
+            if convert_model(name, model_id):
+                return True
+        print(f"  [폴백] {model_id} 실패 — 다음 후보 시도...")
     return False
 
 
