@@ -1,10 +1,45 @@
 import 'dart:io';
+import 'package:archive/archive_io.dart';
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import '../core/config.dart';
 import '../core/languages.dart';
+
+// 백그라운드 isolate에서 ZIP 추출 — Process.run 없이 순수 Dart로 처리
+// (Android SELinux가 서브프로세스 실행을 차단하는 문제 해결)
+void _extractZipIsolate(Map<String, String> args) {
+  final zipPath       = args['zipPath']!;
+  final destDir       = args['destDir']!;
+  final canonicalDest = args['canonicalDest']!;
+  // 경로 비교 시 trailing separator 보장 (Zip Slip 오탐 방지)
+  final prefix = canonicalDest.endsWith('/') ? canonicalDest : '$canonicalDest/';
+
+  final inputStream = InputFileStream(zipPath);
+  final archive = ZipDecoder().decodeStream(inputStream);
+
+  for (final file in archive) {
+    final outPath = p.normalize(p.join(destDir, file.name));
+
+    // Zip Slip 방지: 추출 경로가 destDir 하위인지 확인
+    if (outPath != canonicalDest && !outPath.startsWith(prefix)) {
+      inputStream.closeSync();
+      throw Exception('Zip Slip 감지: ${file.name}');
+    }
+
+    if (file.isFile) {
+      File(outPath).createSync(recursive: true);
+      final out = OutputFileStream(outPath);
+      file.writeContent(out);
+      out.closeSync();
+    } else {
+      Directory(outPath).createSync(recursive: true);
+    }
+  }
+  inputStream.closeSync();
+}
 
 /// 모델 파일 관리 — 다운로드, 무결성 검증, 압축 해제
 class ModelManager {
@@ -12,7 +47,10 @@ class ModelManager {
   static ModelManager get instance => _instance ??= ModelManager._();
   ModelManager._();
 
-  final Dio _dio = Dio();
+  final Dio _dio = Dio(BaseOptions(
+    connectTimeout: const Duration(seconds: 30),
+    receiveTimeout: const Duration(minutes: 10),
+  ));
   String? _modelDir;
 
   // 다운로드 진행 콜백: (modelName, progress 0.0~1.0)
@@ -48,7 +86,6 @@ class ModelManager {
   }
 
   /// 단일 모델 다운로드 + 무결성 검증 + 압축 해제
-  /// [url] 생략 시 modelBaseUrl 기반 자동 생성
   Future<void> downloadModel(String modelName, {String? url}) async {
     final effectiveUrl = url ?? '${AppConfig.modelBaseUrl}/$modelName.zip';
 
@@ -73,12 +110,11 @@ class ModelManager {
       // ── 보안 ②: SHA256 무결성 검증 ──────────────────────────
       await _verifyChecksum(zipPath, modelName);
 
-      // ── 보안 ③: Zip Slip 방지 압축 해제 ──────────────────────
+      // ── 보안 ③: 순수 Dart ZIP 추출 (백그라운드 isolate) ──────
       await _safeExtractZip(zipPath, destDir.path);
 
       await File(p.join(destDir.path, '.ready')).create();
     } finally {
-      // 성공/실패 관계없이 임시 ZIP 삭제
       final zip = File(zipPath);
       if (zip.existsSync()) await zip.delete();
     }
@@ -101,56 +137,28 @@ class ModelManager {
   // ── 보안 ②: SHA256 해시 검증 ──────────────────────────────────
   Future<void> _verifyChecksum(String filePath, String modelName) async {
     final expected = AppConfig.modelSha256[modelName];
-    if (expected == null) return; // 해시 미등록 시 건너뜀 (배포 전 개발용)
+    if (expected == null) return;
 
     final bytes  = await File(filePath).readAsBytes();
     final actual = sha256.convert(bytes).toString();
     if (actual != expected) {
       throw SecurityException(
         '모델 파일 무결성 검증 실패 ($modelName)\n'
-        '예상: $expected\n실제: $actual\n'
-        '파일이 손상되었거나 변조되었을 수 있습니다.',
+        '예상: $expected\n실제: $actual',
       );
     }
   }
 
-  // ── 보안 ③: Zip Slip 방지 압축 해제 ──────────────────────────
-  // ZIP 내부 경로가 destDir 외부를 가리키는 경우 중단
+  // ── 보안 ③: 백그라운드 isolate에서 ZIP 추출 ────────────────────
+  // Process.run('unzip') 대신 순수 Dart archive 패키지 사용
+  // → Android SELinux 서브프로세스 제한 우회, 메인 스레드 차단 없음
   Future<void> _safeExtractZip(String zipPath, String destDir) async {
     final canonicalDest = Directory(destDir).resolveSymbolicLinksSync();
-
-    if (Platform.isAndroid || Platform.isLinux || Platform.isIOS || Platform.isMacOS) {
-      // unzip -o: 덮어쓰기 허용, -d: 대상 디렉토리
-      final result = await Process.run(
-        'unzip', ['-o', zipPath, '-d', destDir],
-        runInShell: false, // 쉘 해석 없이 직접 실행 (인수 인젝션 방지)
-      );
-      if (result.exitCode != 0) {
-        throw Exception('압축 해제 실패: ${result.stderr}');
-      }
-    } else if (Platform.isWindows) {
-      final result = await Process.run(
-        'powershell',
-        ['-NoProfile', '-Command',
-         'Expand-Archive', '-LiteralPath', zipPath,
-         '-DestinationPath', destDir, '-Force'],
-        runInShell: false,
-      );
-      if (result.exitCode != 0) {
-        throw Exception('압축 해제 실패: ${result.stderr}');
-      }
-    }
-
-    // 해제 후 생성된 모든 파일 경로가 destDir 내부에 있는지 검증
-    await for (final entity in Directory(destDir).list(recursive: true)) {
-      final canonical = entity.resolveSymbolicLinksSync();
-      if (!canonical.startsWith(canonicalDest)) {
-        await entity.delete(recursive: true);
-        throw SecurityException(
-          'Zip Slip 공격 감지: 허용 범위 외부 경로 → ${entity.path}',
-        );
-      }
-    }
+    await compute<Map<String, String>, void>(_extractZipIsolate, {
+      'zipPath':       zipPath,
+      'destDir':       destDir,
+      'canonicalDest': canonicalDest,
+    });
   }
 
   Future<List<String>> downloadedModels() async {
