@@ -75,6 +75,10 @@ jobs:
           cp "$SRC/app/src/main/res/values/styles.xml" \
              "$TARGET/app/src/main/res/values/" 2>/dev/null || true
 
+          # proguard-rules.pro 복사 + Play Core dontwarn 추가
+          cp "$SRC/app/proguard-rules.pro" "$TARGET/app/" 2>/dev/null || touch "$TARGET/app/proguard-rules.pro"
+          echo '-dontwarn com.google.android.play.core.**' >> "$TARGET/app/proguard-rules.pro"
+
           # applicationId + namespace 보정 (Groovy DSL 및 Kotlin DSL 모두 처리)
           for gradle_file in "$TARGET/app/build.gradle" "$TARGET/app/build.gradle.kts"; do
             [ -f "$gradle_file" ] || continue
