@@ -19,16 +19,27 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final _inputCtrl = TextEditingController();
+  final _notifier  = TranslateNotifier();
+
+  @override
+  void initState() {
+    super.initState();
+    // 첫 프레임 이후 전체 모델 다운로드 시작
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _notifier.initAllModels();
+    });
+  }
 
   @override
   void dispose() {
     _inputCtrl.dispose();
+    _notifier.dispose();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => ChangeNotifierProvider(
-    create: (_) => TranslateNotifier(),
+  Widget build(BuildContext context) => ChangeNotifierProvider.value(
+    value: _notifier,
     child: Consumer<TranslateNotifier>(
       builder: (ctx, n, _) {
         // STT/OCR 결과 → 텍스트 필드 동기화
@@ -40,8 +51,12 @@ class _HomeScreenState extends State<HomeScreen> {
           }
         };
 
-        final showDownload =
-            n.isDownloading || n.voiceState == VoiceState.downloadingModel;
+        // 초기 모델 다운로드 중이면 전용 설치 화면 표시
+        if (n.isInitialSetup) {
+          return _InitialSetupScreen(n: n);
+        }
+
+        final showDownload = n.voiceState == VoiceState.downloadingModel;
 
         return Scaffold(
           backgroundColor: const Color(0xFFF5F7FA),
@@ -77,6 +92,85 @@ class _HomeScreenState extends State<HomeScreen> {
       },
     ),
   );
+}
+
+// ── 초기 설치 화면 ────────────────────────────────────────────────────
+class _InitialSetupScreen extends StatelessWidget {
+  final TranslateNotifier n;
+  const _InitialSetupScreen({required this.n});
+
+  @override
+  Widget build(BuildContext context) {
+    final done     = n.setupModelDone;
+    final total    = n.setupModelTotal;
+    final progress = n.downloadProgress;
+    final status   = n.downloadStatus;
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF1E2A3A),
+      body: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 40),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.translate, size: 72, color: Colors.white70),
+                const SizedBox(height: 24),
+                const Text('Pia 번역',
+                    style: TextStyle(
+                        fontSize: 28,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white)),
+                const SizedBox(height: 8),
+                const Text(
+                  '오프라인 번역 모델을 준비하고 있습니다.\n이후 인터넷 없이도 번역할 수 있습니다.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 14, color: Colors.white60),
+                ),
+                const SizedBox(height: 48),
+                // 전체 진행
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('$done / $total 완료',
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 13)),
+                    Text('${(progress * 100).round()}%',
+                        style: const TextStyle(
+                            color: Colors.white70, fontSize: 13)),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: LinearProgressIndicator(
+                    value: total == 0
+                        ? 0
+                        : (done - 1 + progress) / total,
+                    minHeight: 10,
+                    backgroundColor: Colors.white24,
+                    valueColor:
+                        const AlwaysStoppedAnimation<Color>(Color(0xFF4FC3F7)),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                if (status.isNotEmpty)
+                  Text(status,
+                      style: const TextStyle(
+                          color: Colors.white54, fontSize: 12)),
+                const SizedBox(height: 8),
+                const Text(
+                  'WiFi 연결 상태에서 약 3~5분 소요됩니다.',
+                  style: TextStyle(color: Colors.white38, fontSize: 11),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 // ── 번역 본문 (얇은 조립 레이어) ─────────────────────────────────────

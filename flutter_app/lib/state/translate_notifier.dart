@@ -35,18 +35,63 @@ class TranslateNotifier extends ChangeNotifier {
   double downloadProgress  = 0.0;
   String? errorMessage;
 
+  // ── 초기 전체 모델 다운로드 상태 ─────────────────────────────
+  bool isInitialSetup   = false;
+  int  setupModelTotal  = kRequiredModels.length;
+  int  setupModelDone   = 0;
+
   VoiceState voiceState = VoiceState.idle;
   OcrState   ocrState   = OcrState.idle;
 
   bool get isRecording  => voiceState == VoiceState.recording;
   bool get isOcrRunning => ocrState   == OcrState.processing;
-  bool get isBusy       => isTranslating || isDownloading || isRecording || isOcrRunning;
+  bool get isBusy       => isTranslating || isDownloading || isRecording || isOcrRunning || isInitialSetup;
 
   // 텍스트 필드 동기화 콜백 (화면에서 등록)
   void Function(String)? onSttText;
 
   // 현재 입력 유형 추적 (데이터 수집용)
   String _currentInputType = 'text';
+
+  // ── 앱 최초 실행 시 전체 모델 일괄 다운로드 ──────────────────
+  Future<void> initAllModels() async {
+    final mm = ModelManager.instance;
+    final checks = await Future.wait(kRequiredModels.map(mm.isDownloaded));
+    final needed = [
+      for (int i = 0; i < kRequiredModels.length; i++)
+        if (!checks[i]) kRequiredModels[i],
+    ];
+    if (needed.isEmpty) return;
+
+    isInitialSetup  = true;
+    setupModelTotal = kRequiredModels.length;
+    setupModelDone  = kRequiredModels.length - needed.length;
+    notifyListeners();
+
+    final timer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+      notifyListeners();
+    });
+
+    mm.onProgress = (name, prog) {
+      downloadStatus   = '$name 다운로드 중...';
+      downloadProgress = prog;
+    };
+
+    for (final name in needed) {
+      try {
+        await mm.downloadModel(name);
+      } catch (e) {
+        // 개별 실패는 기록만 하고 계속 진행 — 해당 언어쌍만 비활성화됨
+      }
+      setupModelDone++;
+    }
+
+    timer.cancel();
+    isInitialSetup = false;
+    mm.onProgress  = null;
+    downloadStatus = '';
+    notifyListeners();
+  }
 
 
   // ── 언어 전환 ─────────────────────────────────────────────────
@@ -86,13 +131,22 @@ class TranslateNotifier extends ChangeNotifier {
   Future<void> runTranslation(BuildContext context) async {
     if (inputText.trim().isEmpty) return;
 
+    // 초기 설치 중이면 대기
+    if (isInitialSetup) {
+      errorMessage = '모델 다운로드 중입니다. 완료 후 번역하세요.';
+      notifyListeners();
+      return;
+    }
+
+    // 필요한 모델이 없으면 에러 (네트워크 문제로 초기 다운로드 실패한 경우)
     final mm    = ModelManager.instance;
     final route = translationRoute(_src.code, _dst.code);
     for (final model in route) {
       if (!await mm.isDownloaded(model)) {
-        await _downloadTranslationModels(route, mm);
-        if (errorMessage != null) return; // 다운로드 실패 — 에러 표시 유지
-        break;
+        errorMessage = '[$model] 모델이 준비되지 않았습니다.\n'
+            '네트워크를 확인 후 앱을 재시작해주세요.';
+        notifyListeners();
+        return;
       }
     }
 
@@ -123,34 +177,6 @@ class TranslateNotifier extends ChangeNotifier {
       outputText   = '';
     } finally {
       isTranslating = false;
-      notifyListeners();
-    }
-  }
-
-  Future<void> _downloadTranslationModels(
-      List<String> models, ModelManager mm) async {
-    isDownloading = true;
-    notifyListeners();
-
-    // 콜백과 UI 업데이트를 완전히 분리:
-    // onProgress는 값만 기록하고, 500ms 타이머가 notifyListeners() 호출
-    // → 다운로드 청크 빈도에 관계없이 메인 스레드 부하 고정
-    Timer? uiTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
-      notifyListeners();
-    });
-
-    mm.onProgress = (name, prog) {
-      downloadStatus   = '$name 다운로드 중...';
-      downloadProgress = prog;
-    };
-    try {
-      await mm.ensureModels(models);
-    } catch (e) {
-      errorMessage = '모델 다운로드 실패: $e';
-    } finally {
-      uiTimer.cancel();
-      isDownloading = false;
-      mm.onProgress = null;
       notifyListeners();
     }
   }
