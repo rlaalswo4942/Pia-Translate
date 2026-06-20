@@ -18,7 +18,7 @@ void _extractZipIsolate(Map<String, String> args) {
   final prefix = canonicalDest.endsWith('/') ? canonicalDest : '$canonicalDest/';
 
   final inputStream = InputFileStream(zipPath);
-  final archive = ZipDecoder().decodeStream(inputStream);
+  final archive = ZipDecoder().decodeBuffer(inputStream);
 
   for (final file in archive) {
     final outPath = p.normalize(p.join(destDir, file.name));
