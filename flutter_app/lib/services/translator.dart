@@ -47,8 +47,12 @@ void _onnxIsolateMain(SendPort mainPort) {
 
   final Map<String, OrtSession> cache = {};
 
-  OrtSession _get(String path) => cache.putIfAbsent(
-      path, () => OrtSession.fromFile(File(path), OrtSessionOptions()));
+  OrtSession _get(String path) => cache.putIfAbsent(path, () {
+    final opts = OrtSessionOptions()
+      ..setIntraOpNumThreads(4)
+      ..setInterOpNumThreads(1);
+    return OrtSession.fromFile(File(path), opts);
+  });
 
   port.listen((msg) {
     if (msg is! Map) return;
@@ -121,26 +125,37 @@ List<int> _onnxInfer({
   inTensor.release(); maskTensor.release();
   for (final v in encOut) { v?.release(); }
 
-  // 디코더 greedy
+  // 디코더 greedy — eHid/eAttn은 매 스텝 동일하므로 루프 밖에서 한 번만 생성
+  final eHid  = OrtValueTensor.createTensorWithDataList(hidden, [1, seqLen, hidSize]);
+  final eAttn = OrtValueTensor.createTensorWithDataList(
+      Int64List.fromList(List.filled(seqLen, 1)), [1, seqLen]);
+  final runOpts = OrtRunOptions();
+
   final out = [bosId];
-  for (int step = 0; step < maxLen; step++) {
-    final dIn  = OrtValueTensor.createTensorWithDataList(Int64List.fromList(out), [1, out.length]);
-    final eHid = OrtValueTensor.createTensorWithDataList(hidden, [1, seqLen, hidSize]);
-    final eAttn= OrtValueTensor.createTensorWithDataList(Int64List.fromList(List.filled(seqLen, 1)), [1, seqLen]);
+  try {
+    for (int step = 0; step < maxLen; step++) {
+      final dIn    = OrtValueTensor.createTensorWithDataList(Int64List.fromList(out), [1, out.length]);
+      final decOut = decoder.run(runOpts, {
+        'input_ids':               dIn,
+        'encoder_hidden_states':   eHid,
+        'encoder_attention_mask':  eAttn,
+      });
+      final lastLogits = ((decOut[0]?.value as List)[0] as List).last as List;
 
-    final decOut     = decoder.run(OrtRunOptions(), {'input_ids': dIn, 'encoder_hidden_states': eHid, 'encoder_attention_mask': eAttn});
-    final lastLogits = ((decOut[0]?.value as List)[0] as List).last as List;
+      int nextToken = 0; double maxVal = double.negativeInfinity;
+      for (int i = 0; i < lastLogits.length; i++) {
+        final v = (lastLogits[i] as num).toDouble();
+        if (v > maxVal) { maxVal = v; nextToken = i; }
+      }
+      dIn.release();
+      for (final v in decOut) { v?.release(); }
 
-    int nextToken = 0; double maxVal = double.negativeInfinity;
-    for (int i = 0; i < lastLogits.length; i++) {
-      final v = (lastLogits[i] as num).toDouble();
-      if (v > maxVal) { maxVal = v; nextToken = i; }
+      if (nextToken == eosId) break;
+      out.add(nextToken);
     }
-    dIn.release(); eHid.release(); eAttn.release();
-    for (final v in decOut) { v?.release(); }
-
-    if (nextToken == eosId) break;
-    out.add(nextToken);
+  } finally {
+    eHid.release();
+    eAttn.release();
   }
   // 세션은 해제 안 함 — 캐시에서 재사용
 

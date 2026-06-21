@@ -38,7 +38,7 @@ class AppConfig {
   static const String appVersion = '1.0.0';
 
   // ── 추론 설정 ────────────────────────────────────────────────
-  static const int maxOutputLength = 256;
+  static const int maxOutputLength = 128;
   static const int beamSize        = 1;    // greedy decoding (속도 우선)
   static const double lengthPenalty = 0.6;
 
