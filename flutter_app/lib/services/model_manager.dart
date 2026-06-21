@@ -85,7 +85,7 @@ class ModelManager {
     }
   }
 
-  /// 단일 모델 다운로드 + 무결성 검증 + 압축 해제
+  /// 단일 모델 다운로드 + 무결성 검증 + 압축 해제 (이어받기 + 자동 재시도 3회)
   Future<void> downloadModel(String modelName, {String? url}) async {
     final effectiveUrl = url ?? '${AppConfig.modelBaseUrl}/$modelName.zip';
 
@@ -98,25 +98,87 @@ class ModelManager {
 
     await destDir.create(recursive: true);
 
+    Object? lastError;
+    for (int attempt = 0; attempt < 3; attempt++) {
+      try {
+        // ── 이어받기 스트리밍 다운로드 ──────────────────────────
+        await _downloadWithResume(effectiveUrl, zipPath, modelName);
+
+        // ── 보안 ②: SHA256 무결성 검증 ──────────────────────────
+        await _verifyChecksum(zipPath, modelName);
+
+        // ── 보안 ③: 순수 Dart ZIP 추출 (백그라운드 isolate) ──────
+        await _safeExtractZip(zipPath, destDir.path);
+
+        await File(p.join(destDir.path, '.ready')).create();
+        _deleteIfExists(zipPath);
+        return; // 성공
+      } on SecurityException {
+        _deleteIfExists(zipPath);
+        rethrow; // 보안 오류는 재시도 없이 즉시 전파
+      } catch (e) {
+        lastError = e;
+        // 무결성/ZIP 오류 → 손상된 파일 삭제 후 처음부터 재다운로드
+        // 네트워크 오류 → 부분 파일 유지해서 다음 시도에서 이어받기
+        final msg = e.toString().toLowerCase();
+        if (msg.contains('무결성') || msg.contains('zip') || msg.contains('slip')) {
+          _deleteIfExists(zipPath);
+        }
+      }
+    }
+
+    _deleteIfExists(zipPath);
+    throw Exception('$modelName 다운로드 실패 (3회 시도): $lastError');
+  }
+
+  void _deleteIfExists(String path) {
+    final f = File(path);
+    if (f.existsSync()) f.deleteSync();
+  }
+
+  // ── 이어받기 지원 스트리밍 다운로드 ───────────────────────────────
+  // Range 헤더로 중단 지점부터 재개, 서버가 206 응답하면 append 모드로 저장
+  Future<void> _downloadWithResume(
+      String url, String zipPath, String modelName) async {
+    final file      = File(zipPath);
+    final startByte = file.existsSync() ? file.lengthSync() : 0;
+
+    final response = await _dio.get<ResponseBody>(
+      url,
+      options: Options(
+        responseType: ResponseType.stream,
+        headers: startByte > 0 ? {'Range': 'bytes=$startByte-'} : null,
+      ),
+    );
+
+    final isPartial = (response.statusCode ?? 200) == 206;
+    final mode      = (startByte > 0 && isPartial) ? FileMode.append : FileMode.write;
+
+    // 전체 파일 크기 계산 (진행률 표시용)
+    int total = 0;
+    if (isPartial) {
+      final cr = response.headers.value('content-range');
+      if (cr != null) {
+        final m = RegExp(r'/(\d+)').firstMatch(cr);
+        if (m != null) total = int.parse(m.group(1)!);
+      }
+    } else {
+      final cl = response.headers.value(Headers.contentLengthHeader);
+      if (cl != null) total = int.parse(cl);
+    }
+
+    final sink     = file.openWrite(mode: mode);
+    int   received = isPartial ? startByte : 0;
+
     try {
-      await _dio.download(
-        effectiveUrl,
-        zipPath,
-        onReceiveProgress: (received, total) {
-          if (total > 0) onProgress?.call(modelName, received / total);
-        },
-      );
-
-      // ── 보안 ②: SHA256 무결성 검증 ──────────────────────────
-      await _verifyChecksum(zipPath, modelName);
-
-      // ── 보안 ③: 순수 Dart ZIP 추출 (백그라운드 isolate) ──────
-      await _safeExtractZip(zipPath, destDir.path);
-
-      await File(p.join(destDir.path, '.ready')).create();
+      await for (final chunk in response.data!.stream) {
+        sink.add(chunk);
+        received += chunk.length;
+        if (total > 0) onProgress?.call(modelName, received / total);
+      }
+      await sink.flush();
     } finally {
-      final zip = File(zipPath);
-      if (zip.existsSync()) await zip.delete();
+      await sink.close();
     }
   }
 
