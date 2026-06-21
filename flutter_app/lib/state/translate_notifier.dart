@@ -36,9 +36,10 @@ class TranslateNotifier extends ChangeNotifier {
   String? errorMessage;
 
   // ── 초기 전체 모델 다운로드 상태 ─────────────────────────────
-  bool isInitialSetup   = false;
-  int  setupModelTotal  = kRequiredModels.length;
-  int  setupModelDone   = 0;
+  bool         isInitialSetup   = false;
+  int          setupModelTotal  = kRequiredModels.length;
+  int          setupModelDone   = 0;
+  List<String> setupFailedModels = [];
 
   VoiceState voiceState = VoiceState.idle;
   OcrState   ocrState   = OcrState.idle;
@@ -62,10 +63,24 @@ class TranslateNotifier extends ChangeNotifier {
         if (!checks[i]) kRequiredModels[i],
     ];
     if (needed.isEmpty) return;
+    await _downloadModels(mm, needed);
+  }
 
+  // 재시도 버튼 핸들러
+  Future<void> retryFailedModels() async {
+    final mm      = ModelManager.instance;
+    final toRetry = List<String>.from(setupFailedModels);
+    setupFailedModels = [];
+    setupModelDone    = setupModelTotal - toRetry.length;
+    notifyListeners();
+    await _downloadModels(mm, toRetry);
+  }
+
+  Future<void> _downloadModels(ModelManager mm, List<String> needed) async {
     isInitialSetup  = true;
     setupModelTotal = kRequiredModels.length;
     setupModelDone  = kRequiredModels.length - needed.length;
+    setupFailedModels = [];
     notifyListeners();
 
     final timer = Timer.periodic(const Duration(milliseconds: 500), (_) {
@@ -80,16 +95,21 @@ class TranslateNotifier extends ChangeNotifier {
     for (final name in needed) {
       try {
         await mm.downloadModel(name);
-      } catch (e) {
-        // 개별 실패는 기록만 하고 계속 진행 — 해당 언어쌍만 비활성화됨
+      } catch (_) {
+        setupFailedModels.add(name);
       }
       setupModelDone++;
     }
 
     timer.cancel();
-    isInitialSetup = false;
     mm.onProgress  = null;
     downloadStatus = '';
+
+    if (setupFailedModels.isEmpty) {
+      // 전부 성공 → 메인 화면으로 전환
+      isInitialSetup = false;
+    }
+    // 실패가 있으면 isInitialSetup = true 유지 → 재시도 UI 표시
     notifyListeners();
   }
 

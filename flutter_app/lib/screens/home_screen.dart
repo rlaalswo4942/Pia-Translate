@@ -101,8 +101,76 @@ class _InitialSetupScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final done     = n.setupModelDone;
-    final total    = n.setupModelTotal;
+    final done    = n.setupModelDone;
+    final total   = n.setupModelTotal;
+    final failed  = n.setupFailedModels;
+    final isRetrying = failed.isEmpty && n.downloadStatus.isNotEmpty;
+
+    // 실패 상태
+    if (failed.isNotEmpty) {
+      return Scaffold(
+        backgroundColor: const Color(0xFF1E2A3A),
+        body: SafeArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 40),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.cloud_off, size: 72, color: Color(0xFFEF9A9A)),
+                  const SizedBox(height: 24),
+                  const Text('다운로드 실패',
+                      style: TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white)),
+                  const SizedBox(height: 12),
+                  Text(
+                    '${failed.length}개 모델을 받지 못했습니다.\n'
+                    'WiFi 상태를 확인하고 다시 시도해주세요.',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 14, color: Colors.white60),
+                  ),
+                  const SizedBox(height: 16),
+                  // 실패 모델 목록
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.white10,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: failed
+                          .map((m) => Text('• $m',
+                              style: const TextStyle(
+                                  color: Color(0xFFEF9A9A), fontSize: 13)))
+                          .toList(),
+                    ),
+                  ),
+                  const SizedBox(height: 32),
+                  ElevatedButton.icon(
+                    onPressed: () => n.retryFailedModels(),
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('다시 시도'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF4FC3F7),
+                      foregroundColor: Colors.black87,
+                      minimumSize: const Size(double.infinity, 48),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    // 다운로드 진행 중
     final progress = n.downloadProgress;
     final status   = n.downloadStatus;
 
@@ -129,7 +197,6 @@ class _InitialSetupScreen extends StatelessWidget {
                   style: TextStyle(fontSize: 14, color: Colors.white60),
                 ),
                 const SizedBox(height: 48),
-                // 전체 진행
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
@@ -147,7 +214,7 @@ class _InitialSetupScreen extends StatelessWidget {
                   child: LinearProgressIndicator(
                     value: total == 0
                         ? 0
-                        : (done - 1 + progress) / total,
+                        : ((done - 1 + progress) / total).clamp(0.0, 1.0),
                     minHeight: 10,
                     backgroundColor: Colors.white24,
                     valueColor:
