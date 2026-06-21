@@ -104,7 +104,14 @@ List<int> _onnxInfer({
       final map = jsonDecode(cfg.readAsStringSync()) as Map<String, dynamic>;
       eosId = (map['eos_token_id'] as num?)?.toInt() ?? 0;
       final sid = (map['decoder_start_token_id'] as num?)?.toInt();
-      if (sid != null) bosId = sid;
+      final pid = (map['pad_token_id']            as num?)?.toInt();
+      // OPUS-MT: decoder_start_token_id = pad_token_id (보통 65001 등 큰 값)
+      // decoder_start_token_id 없으면 pad_token_id로 폴백
+      if (sid != null) {
+        bosId = sid;
+      } else if (pid != null && pid != eosId) {
+        bosId = pid;
+      }
     } catch (_) {}
   }
 
