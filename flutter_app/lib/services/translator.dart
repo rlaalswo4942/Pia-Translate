@@ -104,7 +104,7 @@ List<int> _onnxInfer({
       final map = jsonDecode(cfg.readAsStringSync()) as Map<String, dynamic>;
       eosId = (map['eos_token_id'] as num?)?.toInt() ?? 0;
       final sid = (map['decoder_start_token_id'] as num?)?.toInt();
-      if (sid != null && sid < 50000) bosId = sid;
+      if (sid != null) bosId = sid;
     } catch (_) {}
   }
 
