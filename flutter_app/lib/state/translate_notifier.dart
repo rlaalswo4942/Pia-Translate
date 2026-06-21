@@ -116,6 +116,8 @@ class TranslateNotifier extends ChangeNotifier {
     if (setupFailedModels.isEmpty) {
       isInitialSetup = false;
       notifyListeners();
+      // 현재 언어쌍 세션 사전 로드 — 첫 번역을 즉시 응답 가능하도록 warm-up
+      _preloadCurrentSessions();
       return;
     }
 
@@ -137,6 +139,16 @@ class TranslateNotifier extends ChangeNotifier {
   }
 
 
+  // ── 현재 언어쌍 세션 사전 로드 ──────────────────────────────────
+  void _preloadCurrentSessions() {
+    final route = translationRoute(_src.code, _dst.code);
+    for (final modelName in route) {
+      ModelManager.instance.modelPath(modelName).then((dir) {
+        tr.preloadSessions(dir);
+      });
+    }
+  }
+
   // ── 언어 전환 ─────────────────────────────────────────────────
   void swapLanguages() {
     final tmp  = _src; _src = _dst; _dst = tmp;
@@ -145,16 +157,21 @@ class TranslateNotifier extends ChangeNotifier {
     ocrText        = '';
     ocrImagePath   = '';
     notifyListeners();
+    _preloadCurrentSessions();
   }
 
   void setSrc(Language l) {
     if (l.code == _dst.code) { swapLanguages(); return; }
-    _src = l; notifyListeners();
+    _src = l;
+    notifyListeners();
+    _preloadCurrentSessions();
   }
 
   void setDst(Language l) {
     if (l.code == _src.code) { swapLanguages(); return; }
-    _dst = l; notifyListeners();
+    _dst = l;
+    notifyListeners();
+    _preloadCurrentSessions();
   }
 
   // ── 전체 초기화 ──────────────────────────────────────────────

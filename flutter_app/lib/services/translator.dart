@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:onnxruntime/onnxruntime.dart';
 import 'package:path/path.dart' as p;
@@ -11,157 +11,194 @@ import 'model_manager.dart';
 
 const _channel = MethodChannel('com.pia.translate/sentencepiece');
 
+// ── SentencePiece — 메인 isolate 전용 (MethodChannel) ─────────────────
 Future<List<int>> _spEncode(String spModelPath, String text) async {
   final ids = await _channel.invokeMethod<List<dynamic>>(
-    'encode',
-    {'modelPath': spModelPath, 'text': text},
-  );
+    'encode', {'modelPath': spModelPath, 'text': text});
   return ids?.cast<int>() ?? [];
 }
 
 Future<String> _spDecode(String spModelPath, List<int> ids) async {
   final text = await _channel.invokeMethod<String>(
-    'decode',
-    {'modelPath': spModelPath, 'ids': ids},
-  );
+    'decode', {'modelPath': spModelPath, 'ids': ids});
   return text ?? '';
 }
 
-// ONNX 세션 로딩 + 추론 전용 함수 — compute() isolate에서 실행
-// MethodChannel 없음 (background isolate에서 사용 불가)
-// 입력: encoderPath, decoderPath, inputIds(List<int>), maxLen(int)
-// 출력: 생성된 토큰 ID 리스트 (BOS 제거 전)
-List<int> _runOnnxIsolate(Map<String, dynamic> args) {
-  final encoderPath = args['encoderPath'] as String;
-  final decoderPath = args['decoderPath'] as String;
-  final inputIds    = List<int>.from(args['inputIds'] as List);
-  final maxLen      = args['maxLen'] as int;
+// ── 영구 ONNX Isolate ──────────────────────────────────────────────────
+// compute()는 호출마다 새 isolate를 생성해 모델을 디스크에서 재로드(매번 5~15초).
+// 영구 isolate는 OrtSession을 메모리에 캐시 → 첫 번역 후 즉시 응답.
+Future<SendPort>? _onnxIsolateFuture;
 
-  // config.json에서 BOS/EOS 토큰 ID 결정
-  // decoder_start_token_id가 디코더 어휘 범위를 초과하는 경우(예: 65000)
-  // → 인코더 PAD 토큰을 잘못 참조한 것이므로 0(</s>)으로 대체
-  int bosId = 0;
-  int eosId = 0;
-  final configFile = File(p.join(p.dirname(encoderPath), 'config.json'));
-  if (configFile.existsSync()) {
+Future<SendPort> _ensureOnnxIsolate() =>
+    _onnxIsolateFuture ??= _spawnOnnxIsolate();
+
+Future<SendPort> _spawnOnnxIsolate() async {
+  final boot = ReceivePort();
+  await Isolate.spawn(_onnxIsolateMain, boot.sendPort);
+  final sendPort = await boot.first as SendPort;
+  boot.close();
+  return sendPort;
+}
+
+// ── Isolate 메인 — 세션 캐시 보유 ────────────────────────────────────
+void _onnxIsolateMain(SendPort mainPort) {
+  final port = ReceivePort();
+  mainPort.send(port.sendPort); // 핸드셰이크
+
+  final Map<String, OrtSession> cache = {};
+
+  OrtSession _get(String path) => cache.putIfAbsent(
+      path, () => OrtSession.fromFile(File(path), OrtSessionOptions()));
+
+  port.listen((msg) {
+    if (msg is! Map) return;
+    final reply = msg['replyPort'] as SendPort;
+    final type  = (msg['type'] as String?) ?? 'translate';
+
     try {
-      final cfg = jsonDecode(configFile.readAsStringSync()) as Map<String, dynamic>;
-      eosId = (cfg['eos_token_id'] as num?)?.toInt() ?? 0;
-      final startId = (cfg['decoder_start_token_id'] as num?)?.toInt();
-      // 디코더 어휘 크기는 보통 50000 미만 — 초과하면 인코더 PAD 오용으로 판단
-      if (startId != null && startId < 50000) bosId = startId;
+      switch (type) {
+        case 'preload':
+          _get(msg['encoderPath'] as String);
+          _get(msg['decoderPath'] as String);
+          reply.send({'ok': true});
+
+        case 'evict':
+          final key = msg['path'] as String;
+          cache[key]?.release();
+          cache.remove(key);
+          reply.send({'ok': true});
+
+        default: // translate
+          final tokens = _onnxInfer(
+            encoder:    _get(msg['encoderPath'] as String),
+            decoder:    _get(msg['decoderPath'] as String),
+            configPath: msg['configPath'] as String,
+            inputIds:   List<int>.from(msg['inputIds'] as List),
+            maxLen:     msg['maxLen'] as int,
+          );
+          reply.send({'ok': true, 'tokens': tokens});
+      }
+    } catch (e) {
+      reply.send({'ok': false, 'error': e.toString()});
+    }
+  });
+}
+
+// ── ONNX 추론 — 세션 캐시 사용 (해제 안 함) ───────────────────────────
+List<int> _onnxInfer({
+  required OrtSession encoder,
+  required OrtSession decoder,
+  required String configPath,
+  required List<int> inputIds,
+  required int maxLen,
+}) {
+  // config.json에서 BOS/EOS 결정
+  int bosId = 0, eosId = 0;
+  final cfg = File(configPath);
+  if (cfg.existsSync()) {
+    try {
+      final map = jsonDecode(cfg.readAsStringSync()) as Map<String, dynamic>;
+      eosId = (map['eos_token_id'] as num?)?.toInt() ?? 0;
+      final sid = (map['decoder_start_token_id'] as num?)?.toInt();
+      if (sid != null && sid < 50000) bosId = sid;
     } catch (_) {}
   }
 
-  final encoder = OrtSession.fromFile(File(encoderPath), OrtSessionOptions());
+  // 인코더 실행
+  final inTensor   = OrtValueTensor.createTensorWithDataList(Int64List.fromList(inputIds), [1, inputIds.length]);
+  final maskTensor = OrtValueTensor.createTensorWithDataList(Int64List.fromList(List.filled(inputIds.length, 1)), [1, inputIds.length]);
 
-  final inputIdsTensor = OrtValueTensor.createTensorWithDataList(
-    Int64List.fromList(inputIds), [1, inputIds.length],
-  );
-  final attnMaskTensor = OrtValueTensor.createTensorWithDataList(
-    Int64List.fromList(List.filled(inputIds.length, 1)), [1, inputIds.length],
-  );
+  final encOut    = encoder.run(OrtRunOptions(), {'input_ids': inTensor, 'attention_mask': maskTensor});
+  final hiddenRaw = encOut[0]?.value as List;
+  final seqLen    = (hiddenRaw[0] as List).length;
+  final hidSize   = ((hiddenRaw[0] as List)[0] as List).length;
 
-  final encOutputs = encoder.run(OrtRunOptions(), {
-    'input_ids':      inputIdsTensor,
-    'attention_mask': attnMaskTensor,
-  });
-  encoder.release();
-
-  final hiddenRaw  = encOutputs[0]?.value as List;
-  final encSeqLen  = (hiddenRaw[0] as List).length;
-  final hiddenSize = ((hiddenRaw[0] as List)[0] as List).length;
-
-  final hiddenFlat = Float32List(encSeqLen * hiddenSize);
-  for (int i = 0; i < encSeqLen; i++) {
+  final hidden = Float32List(seqLen * hidSize);
+  for (int i = 0; i < seqLen; i++) {
     final row = (hiddenRaw[0] as List)[i] as List;
-    for (int j = 0; j < hiddenSize; j++) {
-      hiddenFlat[i * hiddenSize + j] = (row[j] as num).toDouble();
-    }
+    for (int j = 0; j < hidSize; j++) hidden[i * hidSize + j] = (row[j] as num).toDouble();
   }
-  inputIdsTensor.release();
-  attnMaskTensor.release();
-  for (final v in encOutputs) { v?.release(); }
+  inTensor.release(); maskTensor.release();
+  for (final v in encOut) { v?.release(); }
 
-  final decoder = OrtSession.fromFile(File(decoderPath), OrtSessionOptions());
-  final List<int> generated = [bosId];
-
+  // 디코더 greedy
+  final out = [bosId];
   for (int step = 0; step < maxLen; step++) {
-    final decInputTensor = OrtValueTensor.createTensorWithDataList(
-      Int64List.fromList(generated), [1, generated.length],
-    );
-    final encHiddenTensor = OrtValueTensor.createTensorWithDataList(
-      hiddenFlat, [1, encSeqLen, hiddenSize],
-    );
-    final encAttnTensor = OrtValueTensor.createTensorWithDataList(
-      Int64List.fromList(List.filled(encSeqLen, 1)), [1, encSeqLen],
-    );
+    final dIn  = OrtValueTensor.createTensorWithDataList(Int64List.fromList(out), [1, out.length]);
+    final eHid = OrtValueTensor.createTensorWithDataList(hidden, [1, seqLen, hidSize]);
+    final eAttn= OrtValueTensor.createTensorWithDataList(Int64List.fromList(List.filled(seqLen, 1)), [1, seqLen]);
 
-    final decOutputs = decoder.run(OrtRunOptions(), {
-      'input_ids':              decInputTensor,
-      'encoder_hidden_states':  encHiddenTensor,
-      'encoder_attention_mask': encAttnTensor,
-    });
+    final decOut     = decoder.run(OrtRunOptions(), {'input_ids': dIn, 'encoder_hidden_states': eHid, 'encoder_attention_mask': eAttn});
+    final lastLogits = ((decOut[0]?.value as List)[0] as List).last as List;
 
-    final logitsRaw  = decOutputs[0]?.value as List;
-    final lastLogits = (logitsRaw[0] as List).last as List;
-
-    int nextToken = 0;
-    double maxVal = double.negativeInfinity;
+    int nextToken = 0; double maxVal = double.negativeInfinity;
     for (int i = 0; i < lastLogits.length; i++) {
       final v = (lastLogits[i] as num).toDouble();
       if (v > maxVal) { maxVal = v; nextToken = i; }
     }
-    decInputTensor.release();
-    encHiddenTensor.release();
-    encAttnTensor.release();
-    for (final v in decOutputs) { v?.release(); }
+    dIn.release(); eHid.release(); eAttn.release();
+    for (final v in decOut) { v?.release(); }
 
     if (nextToken == eosId) break;
-    generated.add(nextToken);
+    out.add(nextToken);
   }
-  decoder.release();
+  // 세션은 해제 안 함 — 캐시에서 재사용
 
-  return generated.sublist(1);
+  return out.sublist(1);
 }
 
-// opus-mt-en-ROMANCE 같은 다국어 모델에 목표 언어 접두사 반환
-String _modelLangPrefix(String modelName, String dstLang) {
-  const _romanceModels = {'en_fr', 'en_es', 'en_it', 'en_pt', 'en_ro'};
-  if (_romanceModels.contains(modelName)) return '>>$dstLang<< ';
-  return '';
+// ── 공개 API ──────────────────────────────────────────────────────────
+
+/// 언어쌍 세션 사전 로드 — 다운로드 완료 후 또는 언어 변경 시 호출
+/// 첫 번역 대기 없이 즉시 응답 가능하도록 미리 warm-up
+Future<void> preloadSessions(String modelDir) async {
+  final port  = await _ensureOnnxIsolate();
+  final reply = ReceivePort();
+  port.send({
+    'type':        'preload',
+    'encoderPath': p.join(modelDir, 'encoder_model.onnx'),
+    'decoderPath': p.join(modelDir, 'decoder_model.onnx'),
+    'replyPort':   reply.sendPort,
+  });
+  await reply.first;
+  reply.close();
 }
 
 Future<String> _translateWithModel({
   required String modelDir,
   required String inputText,
 }) async {
-  final encoderPath = p.join(modelDir, 'encoder_model.onnx');
-  final decoderPath = p.join(modelDir, 'decoder_model.onnx');
-  final srcSpmPath  = p.join(modelDir, 'tokenizer', 'source.spm');
-  final tgtSpmPath  = p.join(modelDir, 'tokenizer', 'target.spm');
+  final srcSpm = p.join(modelDir, 'tokenizer', 'source.spm');
+  final tgtSpm = p.join(modelDir, 'tokenizer', 'target.spm');
 
-  // SentencePiece 인코딩 — 메인 isolate (MethodChannel 필요)
-  final inputIds = await _spEncode(srcSpmPath, inputText);
+  final inputIds = await _spEncode(srcSpm, inputText);
   if (inputIds.isEmpty) return inputText;
 
-  // ONNX 세션 로딩 + 추론 — 백그라운드 isolate
-  // OrtSession.fromFile()은 동기 블로킹(수 초) → 메인 스레드에서 실행 시 ANR
-  final generatedIds = await compute<Map<String, dynamic>, List<int>>(
-    _runOnnxIsolate,
-    <String, dynamic>{
-      'encoderPath': encoderPath,
-      'decoderPath': decoderPath,
-      'inputIds':    inputIds,
-      'maxLen':      AppConfig.maxOutputLength,
-    },
-  );
+  final port  = await _ensureOnnxIsolate();
+  final reply = ReceivePort();
+  port.send({
+    'type':        'translate',
+    'encoderPath': p.join(modelDir, 'encoder_model.onnx'),
+    'decoderPath': p.join(modelDir, 'decoder_model.onnx'),
+    'configPath':  p.join(modelDir, 'config.json'),
+    'inputIds':    inputIds,
+    'maxLen':      AppConfig.maxOutputLength,
+    'replyPort':   reply.sendPort,
+  });
 
-  if (generatedIds.isEmpty) return inputText;
+  final res = await reply.first as Map;
+  reply.close();
 
-  // SentencePiece 디코딩 — 메인 isolate (MethodChannel 필요)
-  return _spDecode(tgtSpmPath, generatedIds);
+  if (res['ok'] != true) throw Exception(res['error']);
+  final tokens = List<int>.from(res['tokens'] as List);
+  if (tokens.isEmpty) return inputText;
+
+  return _spDecode(tgtSpm, tokens);
 }
+
+const _romanceModels = {'en_fr', 'en_es', 'en_it', 'en_pt', 'en_ro'};
+String _modelLangPrefix(String modelName, String dstLang) =>
+    _romanceModels.contains(modelName) ? '>>$dstLang<< ' : '';
 
 Future<String> translate({
   required String text,
@@ -176,15 +213,18 @@ Future<String> translate({
   String current = text;
   for (final modelName in route) {
     if (!await mm.isDownloaded(modelName)) {
-      throw Exception('번역 모델 미다운로드: $modelName — 번역 버튼을 다시 눌러 다운로드하세요.');
+      throw Exception('번역 모델 미다운로드: $modelName');
     }
-    final dir   = await mm.modelPath(modelName);
-    final input = _modelLangPrefix(modelName, dstLang) + current;
-    current = await _translateWithModel(modelDir: dir, inputText: input);
+    final dir = await mm.modelPath(modelName);
+    current = await _translateWithModel(
+      modelDir:  dir,
+      inputText: _modelLangPrefix(modelName, dstLang) + current,
+    );
   }
   return current;
 }
 
-// 백그라운드 isolate에서 세션을 생성하므로 메인 스레드에 캐시 없음
-// 필요 시 앱 재시작으로 자연 정리됨
-void releaseAllSessions() {}
+/// 앱 종료 또는 메모리 해제 시 호출
+void releaseAllSessions() {
+  _onnxIsolateFuture = null;
+}
