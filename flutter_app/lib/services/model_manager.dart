@@ -137,48 +137,71 @@ class ModelManager {
   }
 
   // ── 이어받기 지원 스트리밍 다운로드 ───────────────────────────────
-  // Range 헤더로 중단 지점부터 재개, 서버가 206 응답하면 append 모드로 저장
+  // Dio 대신 dart:io HttpClient 사용: 리다이렉트를 직접 따라가며 Range 헤더 유지
+  // Dio는 리다이렉트 시 Range 헤더를 버려 이어받기가 불가능함
   Future<void> _downloadWithResume(
       String url, String zipPath, String modelName) async {
     final file      = File(zipPath);
     final startByte = file.existsSync() ? file.lengthSync() : 0;
 
-    final response = await _dio.get<ResponseBody>(
-      url,
-      options: Options(
-        responseType: ResponseType.stream,
-        headers: startByte > 0 ? {'Range': 'bytes=$startByte-'} : null,
-      ),
-    );
-
-    final isPartial = (response.statusCode ?? 200) == 206;
-    final mode      = (startByte > 0 && isPartial) ? FileMode.append : FileMode.write;
-
-    // 전체 파일 크기 계산 (진행률 표시용)
-    int total = 0;
-    if (isPartial) {
-      final cr = response.headers.value('content-range');
-      if (cr != null) {
-        final m = RegExp(r'/(\d+)').firstMatch(cr);
-        if (m != null) total = int.parse(m.group(1)!);
-      }
-    } else {
-      final cl = response.headers.value(Headers.contentLengthHeader);
-      if (cl != null) total = int.parse(cl);
-    }
-
-    final sink     = file.openWrite(mode: mode);
-    int   received = isPartial ? startByte : 0;
-
+    final client = HttpClient()..autoUncompress = false;
     try {
-      await for (final chunk in response.data!.stream) {
-        sink.add(chunk);
-        received += chunk.length;
-        if (total > 0) onProgress?.call(modelName, received / total);
+      // 리다이렉트를 직접 추적하며 Range 헤더 보존
+      Uri uri = Uri.parse(url);
+      HttpClientResponse? response;
+      for (int hop = 0; hop < 10; hop++) {
+        final req = await client.getUrl(uri);
+        if (startByte > 0) req.headers.set('Range', 'bytes=$startByte-');
+        req.headers.set('User-Agent', 'PiaTranslate/1.0 Dart');
+        final res = await req.close();
+
+        if (res.isRedirect) {
+          final location = res.headers.value('location');
+          if (location == null) { await res.drain<void>(); break; }
+          uri = uri.resolve(location);
+          await res.drain<void>();
+          continue;
+        }
+        response = res;
+        break;
       }
-      await sink.flush();
+
+      if (response == null) throw Exception('리다이렉트 해결 실패');
+      if (response.statusCode != 200 && response.statusCode != 206) {
+        await response.drain<void>();
+        throw Exception('HTTP ${response.statusCode}');
+      }
+
+      final isPartial = response.statusCode == 206;
+      final mode      = (startByte > 0 && isPartial) ? FileMode.append : FileMode.write;
+
+      // 전체 파일 크기 계산 (진행률 표시용)
+      int total = 0;
+      if (isPartial) {
+        final cr = response.headers.value('content-range');
+        if (cr != null) {
+          final m = RegExp(r'/(\d+)').firstMatch(cr ?? '');
+          if (m != null) total = int.parse(m.group(1)!);
+        }
+      } else {
+        if (response.contentLength > 0) total = response.contentLength;
+      }
+
+      final sink     = file.openWrite(mode: mode);
+      int   received = isPartial ? startByte : 0;
+
+      try {
+        await for (final chunk in response) {
+          sink.add(chunk);
+          received += chunk.length;
+          if (total > 0) onProgress?.call(modelName, received / total);
+        }
+        await sink.flush();
+      } finally {
+        await sink.close();
+      }
     } finally {
-      await sink.close();
+      client.close();
     }
   }
 

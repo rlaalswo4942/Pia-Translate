@@ -106,7 +106,33 @@ class _InitialSetupScreen extends StatelessWidget {
     final failed  = n.setupFailedModels;
     final isRetrying = failed.isEmpty && n.downloadStatus.isNotEmpty;
 
-    // 실패 상태
+    // 자동 재시도 중 (실패했지만 아직 20회 미만)
+    if (failed.isNotEmpty && n.autoRetryRound <= 20 && n.downloadStatus.contains('재시도')) {
+      return Scaffold(
+        backgroundColor: const Color(0xFF1E2A3A),
+        body: SafeArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 40),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const CircularProgressIndicator(color: Color(0xFF4FC3F7)),
+                  const SizedBox(height: 32),
+                  Text(n.downloadStatus,
+                      style: const TextStyle(fontSize: 16, color: Colors.white70)),
+                  const SizedBox(height: 8),
+                  Text('${failed.length}개 모델 재시도 중...',
+                      style: const TextStyle(fontSize: 13, color: Colors.white38)),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    // 20회 모두 실패 → 수동 재시도 버튼 표시
     if (failed.isNotEmpty) {
       return Scaffold(
         backgroundColor: const Color(0xFF1E2A3A),
@@ -132,10 +158,8 @@ class _InitialSetupScreen extends StatelessWidget {
                     style: const TextStyle(fontSize: 14, color: Colors.white60),
                   ),
                   const SizedBox(height: 16),
-                  // 실패 모델 목록
                   Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 12),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                     decoration: BoxDecoration(
                       color: Colors.white10,
                       borderRadius: BorderRadius.circular(8),

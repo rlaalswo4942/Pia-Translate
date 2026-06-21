@@ -54,8 +54,11 @@ class TranslateNotifier extends ChangeNotifier {
   // 현재 입력 유형 추적 (데이터 수집용)
   String _currentInputType = 'text';
 
+  int autoRetryRound = 0; // 자동 재시도 누적 횟수
+
   // ── 앱 최초 실행 시 전체 모델 일괄 다운로드 ──────────────────
   Future<void> initAllModels() async {
+    _autoRetryRound = 0;
     final mm = ModelManager.instance;
     final checks = await Future.wait(kRequiredModels.map(mm.isDownloaded));
     final needed = [
@@ -63,11 +66,13 @@ class TranslateNotifier extends ChangeNotifier {
         if (!checks[i]) kRequiredModels[i],
     ];
     if (needed.isEmpty) return;
+    autoRetryRound = 0;
     await _downloadModels(mm, needed);
   }
 
-  // 재시도 버튼 핸들러
+  // 수동 재시도 버튼 핸들러 (자동 재시도 횟수 초기화 후 재개)
   Future<void> retryFailedModels() async {
+    autoRetryRound = 0;
     final mm      = ModelManager.instance;
     final toRetry = List<String>.from(setupFailedModels);
     setupFailedModels = [];
@@ -106,11 +111,26 @@ class TranslateNotifier extends ChangeNotifier {
     downloadStatus = '';
 
     if (setupFailedModels.isEmpty) {
-      // 전부 성공 → 메인 화면으로 전환
       isInitialSetup = false;
+      notifyListeners();
+      return;
     }
-    // 실패가 있으면 isInitialSetup = true 유지 → 재시도 UI 표시
-    notifyListeners();
+
+    // 실패 시: 자동 재시도 (최대 20회, 3초 대기)
+    // 20회 초과 시에만 수동 재시도 버튼 표시
+    autoRetryRound++;
+    if (autoRetryRound <= 20) {
+      downloadStatus = '재시도 중... ($autoRetryRound/20)';
+      notifyListeners();
+      await Future.delayed(const Duration(seconds: 3));
+
+      final toRetry = List<String>.from(setupFailedModels);
+      setupModelDone = setupModelTotal - toRetry.length;
+      await _downloadModels(mm, toRetry);
+    } else {
+      // 20회 모두 실패 → 수동 버튼 표시
+      notifyListeners();
+    }
   }
 
 
