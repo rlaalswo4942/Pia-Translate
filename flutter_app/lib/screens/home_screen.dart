@@ -132,62 +132,116 @@ class _InitialSetupScreen extends StatelessWidget {
       );
     }
 
-    // 20회 모두 실패 → 수동 재시도 버튼 표시
+    // 20회 모두 실패 → 수동 재시도 버튼 + 실제 에러 메시지 표시
     if (failed.isNotEmpty) {
+      final errorLog = n.setupErrorLog;
       return Scaffold(
         backgroundColor: const Color(0xFF1E2A3A),
         body: SafeArea(
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 40),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.cloud_off, size: 72, color: Color(0xFFEF9A9A)),
-                  const SizedBox(height: 24),
-                  const Text('다운로드 실패',
-                      style: TextStyle(
-                          fontSize: 24,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white)),
-                  const SizedBox(height: 12),
-                  Text(
-                    '${failed.length}개 모델을 받지 못했습니다.\n'
-                    'WiFi 상태를 확인하고 다시 시도해주세요.',
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 48),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Icon(Icons.cloud_off, size: 64, color: Color(0xFFEF9A9A)),
+                const SizedBox(height: 20),
+                const Text('다운로드 실패',
                     textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 14, color: Colors.white60),
+                    style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white)),
+                const SizedBox(height: 8),
+                Text(
+                  '${failed.length}개 모델 / 자동 재시도 ${n.autoRetryRound}회 모두 실패',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 13, color: Colors.white60),
+                ),
+                const SizedBox(height: 20),
+                // 모델별 에러 메시지 (진단용)
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.black26,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.white12),
                   ),
-                  const SizedBox(height: 16),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    decoration: BoxDecoration(
-                      color: Colors.white10,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: failed
-                          .map((m) => Text('• $m',
-                              style: const TextStyle(
-                                  color: Color(0xFFEF9A9A), fontSize: 13)))
-                          .toList(),
-                    ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('오류 상세',
+                          style: TextStyle(
+                              color: Colors.white38,
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
+                      ...failed.map((m) {
+                        final err = errorLog[m] ?? '알 수 없는 오류';
+                        // 긴 에러 메시지 80자로 자르기
+                        final short = err.length > 80 ? '${err.substring(0, 80)}…' : err;
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 6),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('[$m]',
+                                  style: const TextStyle(
+                                      color: Color(0xFFEF9A9A),
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold)),
+                              Text(short,
+                                  style: const TextStyle(
+                                      color: Colors.white54, fontSize: 11)),
+                            ],
+                          ),
+                        );
+                      }),
+                    ],
                   ),
-                  const SizedBox(height: 32),
-                  ElevatedButton.icon(
-                    onPressed: () => n.retryFailedModels(),
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('다시 시도'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF4FC3F7),
-                      foregroundColor: Colors.black87,
-                      minimumSize: const Size(double.infinity, 48),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10)),
-                    ),
+                ),
+                const SizedBox(height: 20),
+                // 전체 에러 로그 (복사용)
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.black38,
+                    borderRadius: BorderRadius.circular(6),
                   ),
-                ],
-              ),
+                  child: SelectableText(
+                    failed.map((m) => '[$m]\n${errorLog[m] ?? ''}').join('\n\n'),
+                    style: const TextStyle(
+                        color: Colors.white30,
+                        fontSize: 10,
+                        fontFamily: 'monospace'),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                const Text('위 텍스트를 길게 눌러 복사 후 개발자에게 전달하세요.',
+                    style: TextStyle(color: Colors.white24, fontSize: 10)),
+                const SizedBox(height: 24),
+                ElevatedButton.icon(
+                  onPressed: () => n.retryFailedModels(),
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('다시 시도'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF4FC3F7),
+                    foregroundColor: Colors.black87,
+                    minimumSize: const Size(double.infinity, 48),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                // 실패한 모델 목록 (하단 요약)
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: failed
+                      .map((m) => Text('• $m',
+                          style: const TextStyle(
+                              color: Color(0xFFEF9A9A), fontSize: 13)))
+                      .toList(),
+                ),
+              ],
             ),
           ),
         ),

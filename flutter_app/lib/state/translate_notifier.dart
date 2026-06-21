@@ -36,10 +36,11 @@ class TranslateNotifier extends ChangeNotifier {
   String? errorMessage;
 
   // ── 초기 전체 모델 다운로드 상태 ─────────────────────────────
-  bool         isInitialSetup   = false;
-  int          setupModelTotal  = kRequiredModels.length;
-  int          setupModelDone   = 0;
-  List<String> setupFailedModels = [];
+  bool                  isInitialSetup    = false;
+  int                   setupModelTotal   = kRequiredModels.length;
+  int                   setupModelDone    = 0;
+  List<String>          setupFailedModels = [];
+  Map<String, String>   setupErrorLog     = {}; // 모델별 실제 에러 메시지
 
   VoiceState voiceState = VoiceState.idle;
   OcrState   ocrState   = OcrState.idle;
@@ -86,6 +87,7 @@ class TranslateNotifier extends ChangeNotifier {
     setupModelTotal = kRequiredModels.length;
     setupModelDone  = kRequiredModels.length - needed.length;
     setupFailedModels = [];
+    setupErrorLog     = {};
     notifyListeners();
 
     final timer = Timer.periodic(const Duration(milliseconds: 500), (_) {
@@ -100,8 +102,9 @@ class TranslateNotifier extends ChangeNotifier {
     for (final name in needed) {
       try {
         await mm.downloadModel(name);
-      } catch (_) {
+      } catch (e) {
         setupFailedModels.add(name);
+        setupErrorLog[name] = e.toString();
       }
       setupModelDone++;
     }
