@@ -97,7 +97,9 @@ List<int> _onnxInfer({
   required int maxLen,
 }) {
   // config.json에서 BOS/EOS 결정
-  int bosId = 0, eosId = 0;
+  // 폴백 우선순위: decoder_start_token_id → pad_token_id → vocab_size-1 → 65001(OPUS-MT 기본)
+  int eosId = 0;
+  int bosId = 65001; // OPUS-MT 기본값 (대부분 vocab_size=65002, pad=65001)
   final cfg = File(configPath);
   if (cfg.existsSync()) {
     try {
@@ -105,13 +107,15 @@ List<int> _onnxInfer({
       eosId = (map['eos_token_id'] as num?)?.toInt() ?? 0;
       final sid = (map['decoder_start_token_id'] as num?)?.toInt();
       final pid = (map['pad_token_id']            as num?)?.toInt();
-      // OPUS-MT: decoder_start_token_id = pad_token_id (보통 65001 등 큰 값)
-      // decoder_start_token_id 없으면 pad_token_id로 폴백
-      if (sid != null) {
+      final vid = (map['vocab_size']              as num?)?.toInt();
+      if (sid != null && sid != eosId) {
         bosId = sid;
       } else if (pid != null && pid != eosId) {
         bosId = pid;
+      } else if (vid != null && vid - 1 != eosId) {
+        bosId = vid - 1;
       }
+      // 위 필드 모두 없으면 기본값 65001 유지
     } catch (_) {}
   }
 
