@@ -58,7 +58,7 @@ class TranslateNotifier extends ChangeNotifier {
 
   // ── 앱 최초 실행 시 전체 모델 일괄 다운로드 ──────────────────
   Future<void> initAllModels() async {
-    _autoRetryRound = 0;
+    autoRetryRound = 0;
     final mm = ModelManager.instance;
     final checks = await Future.wait(kRequiredModels.map(mm.isDownloaded));
     final needed = [
