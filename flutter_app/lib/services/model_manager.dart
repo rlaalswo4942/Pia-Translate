@@ -21,7 +21,9 @@ void _extractZipIsolate(Map<String, String> args) {
   final archive = ZipDecoder().decodeBuffer(inputStream);
 
   for (final file in archive) {
-    final outPath = p.normalize(p.join(destDir, file.name));
+    // canonicalDest 기준으로 경로 구성 — Android에서 /data/user/0 ↔ /data/data 심볼릭 링크
+    // 오탐 방지: destDir(심볼릭 링크 경로)가 아닌 canonicalDest(실제 경로)로 비교
+    final outPath = p.normalize(p.join(canonicalDest, file.name));
 
     // Zip Slip 방지: 추출 경로가 destDir 하위인지 확인
     if (outPath != canonicalDest && !outPath.startsWith(prefix)) {
