@@ -174,6 +174,8 @@ List<int> _onnxInfer({
   final eAttn = OrtValueTensor.createTensorWithDataList(
       Int64List.fromList(List.filled(seqLen, 1)), [1, seqLen]);
   final runOpts = OrtRunOptions();
+  logs?.add('디코더 입력명: ${decoder.inputNames}');
+  logs?.add('디코더 출력명: ${decoder.outputNames}');
   logs?.add('디코더 greedy 시작: maxLen=$maxLen');
 
   // No-repeat n-gram (size=3): 동일 3-그램 재등장 금지
@@ -193,7 +195,24 @@ List<int> _onnxInfer({
         'encoder_hidden_states':   eHid,
         'encoder_attention_mask':  eAttn,
       });
+
+      if (step == 0) {
+        logs?.add('decOut 출력수: ${decOut.length}');
+        final raw0 = decOut[0]?.value;
+        if (raw0 is List) {
+          logs?.add('decOut[0] shape: [${raw0.length}, ${(raw0[0] as List).length}, ${((raw0[0] as List)[0] as List).length}]');
+        }
+      }
+
       final lastLogits = ((decOut[0]?.value as List)[0] as List).last as List;
+
+      if (step == 0) {
+        logs?.add('logit vocab size: ${lastLogits.length}');
+        final sorted = List.generate(lastLogits.length, (i) => i)
+          ..sort((a, b) => (lastLogits[b] as num).compareTo(lastLogits[a] as num));
+        final top5 = sorted.take(5).map((i) => 'id$i:${(lastLogits[i] as num).toStringAsFixed(2)}').join(' ');
+        logs?.add('step0 top5: $top5');
+      }
 
       // No-repeat n-gram: 현재 접미사와 일치하는 이전 n-gram 뒤에 나왔던 토큰 금지
       final Set<int> banned = {};
@@ -295,6 +314,12 @@ Future<String> _translateWithModel({
   if (tokens.isEmpty) {
     _L.log('WARN', '출력 토큰 없음 → 원문 반환');
     return inputText;
+  }
+
+  // 개별 토큰 디코드 진단 (첫 8개)
+  for (int i = 0; i < tokens.length && i < 8; i++) {
+    final single = await _spDecode(tgtSpm, [tokens[i]]);
+    _L.log('DIAG', 'token[${tokens[i]}] → "$single"');
   }
 
   return _spDecode(tgtSpm, tokens);
