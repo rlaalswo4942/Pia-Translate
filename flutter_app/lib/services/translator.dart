@@ -7,21 +7,30 @@ import 'package:onnxruntime/onnxruntime.dart';
 import 'package:path/path.dart' as p;
 import '../core/config.dart';
 import '../core/languages.dart';
+import 'app_logger.dart';
 import 'model_manager.dart';
+
+final _L = AppLogger.instance;
 
 const _channel = MethodChannel('com.pia.translate/sentencepiece');
 
 // ── SentencePiece — 메인 isolate 전용 (MethodChannel) ─────────────────
 Future<List<int>> _spEncode(String spModelPath, String text) async {
+  _L.log('SP', '인코딩 입력: "${text.length > 40 ? text.substring(0, 40) + "…" : text}"');
   final ids = await _channel.invokeMethod<List<dynamic>>(
     'encode', {'modelPath': spModelPath, 'text': text});
-  return ids?.cast<int>() ?? [];
+  final result = ids?.cast<int>() ?? [];
+  _L.log('SP', '인코딩 결과: ${result.length}개 토큰 ${result.take(10).toList()}');
+  return result;
 }
 
 Future<String> _spDecode(String spModelPath, List<int> ids) async {
+  _L.log('SP', '디코딩 입력: ${ids.length}개 토큰 ${ids.take(10).toList()}');
   final text = await _channel.invokeMethod<String>(
     'decode', {'modelPath': spModelPath, 'ids': ids});
-  return text ?? '';
+  final result = text ?? '';
+  _L.log('SP', '디코딩 결과: "${result.length > 60 ? result.substring(0, 60) + "…" : result}"');
+  return result;
 }
 
 // ── 영구 ONNX Isolate ──────────────────────────────────────────────────
@@ -73,14 +82,16 @@ void _onnxIsolateMain(SendPort mainPort) {
           reply.send({'ok': true});
 
         default: // translate
+          final isolateLogs = <String>[];
           final tokens = _onnxInfer(
             encoder:    _get(msg['encoderPath'] as String),
             decoder:    _get(msg['decoderPath'] as String),
             configPath: msg['configPath'] as String,
             inputIds:   List<int>.from(msg['inputIds'] as List),
             maxLen:     msg['maxLen'] as int,
+            logs:       isolateLogs,
           );
-          reply.send({'ok': true, 'tokens': tokens});
+          reply.send({'ok': true, 'tokens': tokens, 'log': isolateLogs});
       }
     } catch (e) {
       reply.send({'ok': false, 'error': e.toString()});
@@ -95,38 +106,46 @@ List<int> _onnxInfer({
   required String configPath,
   required List<int> inputIds,
   required int maxLen,
+  List<String>? logs,
 }) {
   // config.json에서 BOS/EOS 결정
-  // 폴백 우선순위: decoder_start_token_id → pad_token_id → vocab_size-1 → 65001(OPUS-MT 기본)
   int eosId = 0;
-  int bosId = 65001; // OPUS-MT 기본값 (대부분 vocab_size=65002, pad=65001)
+  int bosId = 65001;
+  bool cfgFound = false;
+  String cfgSrc = 'default(65001)';
   final cfg = File(configPath);
   if (cfg.existsSync()) {
     try {
       final map = jsonDecode(cfg.readAsStringSync()) as Map<String, dynamic>;
+      cfgFound = true;
       eosId = (map['eos_token_id'] as num?)?.toInt() ?? 0;
       final sid = (map['decoder_start_token_id'] as num?)?.toInt();
       final pid = (map['pad_token_id']            as num?)?.toInt();
       final vid = (map['vocab_size']              as num?)?.toInt();
+      logs?.add('config: eos=$eosId start=$sid pad=$pid vocab=$vid');
       if (sid != null && sid != eosId) {
-        bosId = sid;
+        bosId = sid; cfgSrc = 'decoder_start_token_id';
       } else if (pid != null && pid != eosId) {
-        bosId = pid;
+        bosId = pid; cfgSrc = 'pad_token_id';
       } else if (vid != null && vid - 1 != eosId) {
-        bosId = vid - 1;
+        bosId = vid - 1; cfgSrc = 'vocab_size-1';
       }
-      // 위 필드 모두 없으면 기본값 65001 유지
-    } catch (_) {}
+    } catch (e) { logs?.add('config 파싱 오류: $e'); }
+  } else {
+    logs?.add('config.json 없음 → 기본값 사용');
   }
+  logs?.add('bosId=$bosId (출처:$cfgSrc) eosId=$eosId cfgFound=$cfgFound');
 
   // 인코더 실행
   final inTensor   = OrtValueTensor.createTensorWithDataList(Int64List.fromList(inputIds), [1, inputIds.length]);
   final maskTensor = OrtValueTensor.createTensorWithDataList(Int64List.fromList(List.filled(inputIds.length, 1)), [1, inputIds.length]);
 
+  logs?.add('인코더 실행: 입력 ${inputIds.length}토큰');
   final encOut    = encoder.run(OrtRunOptions(), {'input_ids': inTensor, 'attention_mask': maskTensor});
   final hiddenRaw = encOut[0]?.value as List;
   final seqLen    = (hiddenRaw[0] as List).length;
   final hidSize   = ((hiddenRaw[0] as List)[0] as List).length;
+  logs?.add('인코더 완료: seqLen=$seqLen hidSize=$hidSize');
 
   final hidden = Float32List(seqLen * hidSize);
   for (int i = 0; i < seqLen; i++) {
@@ -141,10 +160,13 @@ List<int> _onnxInfer({
   final eAttn = OrtValueTensor.createTensorWithDataList(
       Int64List.fromList(List.filled(seqLen, 1)), [1, seqLen]);
   final runOpts = OrtRunOptions();
+  logs?.add('디코더 greedy 시작: maxLen=$maxLen');
 
   final out = [bosId];
+  int finalStep = 0;
   try {
     for (int step = 0; step < maxLen; step++) {
+      finalStep = step;
       final dIn    = OrtValueTensor.createTensorWithDataList(Int64List.fromList(out), [1, out.length]);
       final decOut = decoder.run(runOpts, {
         'input_ids':               dIn,
@@ -170,7 +192,15 @@ List<int> _onnxInfer({
   }
   // 세션은 해제 안 함 — 캐시에서 재사용
 
-  return out.sublist(1);
+  final generated = out.sublist(1);
+  logs?.add('디코더 완료: ${finalStep+1}스텝 → ${generated.length}토큰 생성');
+  logs?.add('출력 토큰ID(앞20): ${generated.take(20).toList()}');
+  // 반복 패턴 감지
+  if (generated.length > 4) {
+    final unique = generated.toSet().length;
+    logs?.add('유니크 토큰: $unique / 전체: ${generated.length} (반복률: ${((1 - unique / generated.length) * 100).round()}%)');
+  }
+  return generated;
 }
 
 // ── 공개 API ──────────────────────────────────────────────────────────
@@ -215,9 +245,20 @@ Future<String> _translateWithModel({
   final res = await reply.first as Map;
   reply.close();
 
-  if (res['ok'] != true) throw Exception(res['error']);
+  // isolate에서 보낸 로그를 메인 isolate의 AppLogger에 기록
+  for (final l in (res['log'] as List? ?? [])) {
+    _L.log('ONNX', l.toString());
+  }
+
+  if (res['ok'] != true) {
+    _L.log('ERR', 'ONNX 오류: ${res['error']}');
+    throw Exception(res['error']);
+  }
   final tokens = List<int>.from(res['tokens'] as List);
-  if (tokens.isEmpty) return inputText;
+  if (tokens.isEmpty) {
+    _L.log('WARN', '출력 토큰 없음 → 원문 반환');
+    return inputText;
+  }
 
   return _spDecode(tgtSpm, tokens);
 }
@@ -235,18 +276,20 @@ Future<String> translate({
   final route = translationRoute(srcLang, dstLang);
   if (route.isEmpty) return text;
 
+  _L.log('TR', '번역 시작: $srcLang→$dstLang 경로=$route 입력="${text.length > 30 ? text.substring(0, 30) + "…" : text}"');
   final mm = ModelManager.instance;
   String current = text;
   for (final modelName in route) {
     if (!await mm.isDownloaded(modelName)) {
       throw Exception('번역 모델 미다운로드: $modelName');
     }
-    final dir = await mm.modelPath(modelName);
-    current = await _translateWithModel(
-      modelDir:  dir,
-      inputText: _modelLangPrefix(modelName, dstLang) + current,
-    );
+    final dir   = await mm.modelPath(modelName);
+    final input = _modelLangPrefix(modelName, dstLang) + current;
+    _L.log('TR', '모델[$modelName] 실행, 입력="${input.length > 30 ? input.substring(0, 30) + "…" : input}"');
+    current = await _translateWithModel(modelDir: dir, inputText: input);
+    _L.log('TR', '모델[$modelName] 완료 → "${current.length > 40 ? current.substring(0, 40) + "…" : current}"');
   }
+  _L.log('TR', '최종 결과: "$current"');
   return current;
 }
 

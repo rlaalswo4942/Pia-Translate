@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../core/config.dart';
+import '../services/app_logger.dart';
 import '../state/translate_notifier.dart';
 import '../widgets/language_bar.dart';
 import '../widgets/mic_button.dart';
@@ -66,6 +68,18 @@ class _HomeScreenState extends State<HomeScreen> {
             backgroundColor: const Color(0xFF1E2A3A),
             foregroundColor: Colors.white,
             actions: [
+              IconButton(
+                icon: const Icon(Icons.bug_report_outlined),
+                tooltip: '디버그 로그',
+                onPressed: () => showModalBottomSheet(
+                  context: ctx,
+                  isScrollControlled: true,
+                  shape: const RoundedRectangleBorder(
+                      borderRadius:
+                          BorderRadius.vertical(top: Radius.circular(20))),
+                  builder: (_) => const _DebugLogSheet(),
+                ),
+              ),
               IconButton(
                 icon: const Icon(Icons.storage_outlined),
                 tooltip: '모델 관리',
@@ -473,4 +487,121 @@ class _TranslateBody extends StatelessWidget {
     ),
     child: child,
   );
+}
+
+// ── 디버그 로그 시트 ──────────────────────────────────────────────────
+class _DebugLogSheet extends StatelessWidget {
+  const _DebugLogSheet();
+
+  Color _lineColor(String line) {
+    if (line.contains('][ERR]')) return const Color(0xFFEF9A9A);
+    if (line.contains('][WARN]')) return const Color(0xFFFFCC80);
+    if (line.contains('][TR]')) return const Color(0xFF80CBC4);
+    if (line.contains('][ONNX]')) return const Color(0xFFCE93D8);
+    if (line.contains('][SP]')) return const Color(0xFF90CAF9);
+    if (line.contains('][DL]')) return const Color(0xFFA5D6A7);
+    return const Color(0xFFB0BEC5);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.75,
+      minChildSize: 0.4,
+      maxChildSize: 0.95,
+      builder: (ctx, scrollCtrl) => AnimatedBuilder(
+        animation: AppLogger.instance,
+        builder: (_, __) {
+          final logs = AppLogger.instance.logs.reversed.toList();
+          return Container(
+            decoration: const BoxDecoration(
+              color: Color(0xFF1A1A2E),
+              borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+            ),
+            child: Column(
+              children: [
+                // 핸들 + 헤더
+                Container(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 12, 8),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.bug_report_outlined,
+                          color: Color(0xFF90CAF9), size: 20),
+                      const SizedBox(width: 8),
+                      Text('디버그 로그 (${logs.length}줄)',
+                          style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold)),
+                      const Spacer(),
+                      // 복사 버튼
+                      TextButton.icon(
+                        onPressed: () {
+                          Clipboard.setData(
+                              ClipboardData(text: AppLogger.instance.full));
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('로그 복사 완료'),
+                              duration: Duration(seconds: 1),
+                            ),
+                          );
+                        },
+                        icon: const Icon(Icons.copy,
+                            size: 15, color: Color(0xFF80CBC4)),
+                        label: const Text('전체 복사',
+                            style: TextStyle(
+                                color: Color(0xFF80CBC4), fontSize: 12)),
+                        style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 4)),
+                      ),
+                      // 초기화 버튼
+                      TextButton.icon(
+                        onPressed: () => AppLogger.instance.clear(),
+                        icon: const Icon(Icons.delete_outline,
+                            size: 15, color: Color(0xFFEF9A9A)),
+                        label: const Text('초기화',
+                            style: TextStyle(
+                                color: Color(0xFFEF9A9A), fontSize: 12)),
+                        style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 4)),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(color: Colors.white12, height: 1),
+                // 로그 목록 (최신 순 — reversed)
+                Expanded(
+                  child: logs.isEmpty
+                      ? const Center(
+                          child: Text('로그 없음',
+                              style: TextStyle(
+                                  color: Colors.white24, fontSize: 13)))
+                      : ListView.builder(
+                          controller: scrollCtrl,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 8),
+                          itemCount: logs.length,
+                          itemBuilder: (_, i) => Padding(
+                            padding: const EdgeInsets.only(bottom: 3),
+                            child: SelectableText(
+                              logs[i],
+                              style: TextStyle(
+                                  color: _lineColor(logs[i]),
+                                  fontSize: 10.5,
+                                  fontFamily: 'monospace',
+                                  height: 1.4),
+                            ),
+                          ),
+                        ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
 }

@@ -1,4 +1,4 @@
-import 'dart:io';
+﻿import 'dart:io';
 import 'package:archive/archive_io.dart';
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
@@ -7,6 +7,9 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import '../core/config.dart';
 import '../core/languages.dart';
+import 'app_logger.dart';
+
+final _L = AppLogger.instance;
 
 // 백그라운드 isolate에서 ZIP 추출 — Process.run 없이 순수 Dart로 처리
 // (Android SELinux가 서브프로세스 실행을 차단하는 문제 해결)
@@ -105,14 +108,17 @@ class ModelManager {
       try {
         // ── 이어받기 스트리밍 다운로드 ──────────────────────────
         await _downloadWithResume(effectiveUrl, zipPath, modelName);
+        _L.log('DL', '$modelName 다운로드 완료 → 압축 해제 시작');
 
         // ── 보안 ②: SHA256 무결성 검증 ──────────────────────────
         await _verifyChecksum(zipPath, modelName);
 
         // ── 보안 ③: 순수 Dart ZIP 추출 (백그라운드 isolate) ──────
         await _safeExtractZip(zipPath, destDir.path);
+        _L.log('DL', '$modelName 압축 해제 완료');
 
         await File(p.join(destDir.path, '.ready')).create();
+        _L.log('DL', '$modelName 준비 완료 ✓');
         _deleteIfExists(zipPath);
         return; // 성공
       } on SecurityException {
@@ -120,6 +126,7 @@ class ModelManager {
         rethrow; // 보안 오류는 재시도 없이 즉시 전파
       } catch (e) {
         lastError = e;
+        _L.log('ERR', '$modelName 실패: $e');
         // 무결성/ZIP 오류 → 손상된 파일 삭제 후 처음부터 재다운로드
         // 네트워크 오류 → 부분 파일 유지해서 다음 시도에서 이어받기
         final msg = e.toString().toLowerCase();
