@@ -350,7 +350,7 @@
     );
     const releases = await res.json();
     const apkReleases = releases.filter(r =>
-      r.assets && r.assets.some(a => a.name.endsWith('.apk'))
+      !r.prerelease && r.assets && r.assets.some(a => a.name.endsWith('.apk'))
     );
     if (!apkReleases.length) {
       loading.textContent = '릴리스 없음';

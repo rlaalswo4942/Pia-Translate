@@ -155,6 +155,20 @@ List<int> _onnxInfer({
   inTensor.release(); maskTensor.release();
   for (final v in encOut) { v?.release(); }
 
+  // 인코더 히든 상태 검증 (NaN·범위 이상 → 번역 불량 원인 추적)
+  {
+    double hMin = double.infinity, hMax = double.negativeInfinity, hSum = 0.0;
+    int nanCnt = 0;
+    for (final v in hidden) {
+      if (v.isNaN || v.isInfinite) { nanCnt++; continue; }
+      if (v < hMin) hMin = v;
+      if (v > hMax) hMax = v;
+      hSum += v;
+    }
+    final mean = hidden.isNotEmpty ? hSum / hidden.length : 0.0;
+    logs?.add('인코더 히든: min=${hMin.toStringAsFixed(2)} max=${hMax.toStringAsFixed(2)} mean=${mean.toStringAsFixed(3)} nan=$nanCnt');
+  }
+
   // 디코더 greedy — eHid/eAttn은 매 스텝 동일하므로 루프 밖에서 한 번만 생성
   final eHid  = OrtValueTensor.createTensorWithDataList(hidden, [1, seqLen, hidSize]);
   final eAttn = OrtValueTensor.createTensorWithDataList(
@@ -162,8 +176,14 @@ List<int> _onnxInfer({
   final runOpts = OrtRunOptions();
   logs?.add('디코더 greedy 시작: maxLen=$maxLen');
 
+  // No-repeat n-gram (size=3): 동일 3-그램 재등장 금지
+  // Repetition penalty (1.3): 출현한 토큰 logit ÷ 1.3 — HuggingFace MarianMT 기본값
+  const noRepeatNgramSize = 3;
+  const repetitionPenalty = 1.3;
+
   final out = [bosId];
   int finalStep = 0;
+  bool hitEos = false;
   try {
     for (int step = 0; step < maxLen; step++) {
       finalStep = step;
@@ -175,15 +195,32 @@ List<int> _onnxInfer({
       });
       final lastLogits = ((decOut[0]?.value as List)[0] as List).last as List;
 
+      // No-repeat n-gram: 현재 접미사와 일치하는 이전 n-gram 뒤에 나왔던 토큰 금지
+      final Set<int> banned = {};
+      if (out.length >= noRepeatNgramSize) {
+        final pfxStart = out.length - (noRepeatNgramSize - 1);
+        for (int i = 0; i <= out.length - noRepeatNgramSize; i++) {
+          bool match = true;
+          for (int k = 0; k < noRepeatNgramSize - 1; k++) {
+            if (out[i + k] != out[pfxStart + k]) { match = false; break; }
+          }
+          if (match) banned.add(out[i + noRepeatNgramSize - 1]);
+        }
+      }
+
+      // Greedy 선택 + 반복 패널티
+      final seen = out.toSet();
       int nextToken = 0; double maxVal = double.negativeInfinity;
       for (int i = 0; i < lastLogits.length; i++) {
-        final v = (lastLogits[i] as num).toDouble();
+        if (banned.contains(i)) continue;
+        double v = (lastLogits[i] as num).toDouble();
+        if (seen.contains(i)) v = v > 0 ? v / repetitionPenalty : v * repetitionPenalty;
         if (v > maxVal) { maxVal = v; nextToken = i; }
       }
       dIn.release();
       for (final v in decOut) { v?.release(); }
 
-      if (nextToken == eosId) break;
+      if (nextToken == eosId) { hitEos = true; break; }
       out.add(nextToken);
     }
   } finally {
@@ -193,7 +230,7 @@ List<int> _onnxInfer({
   // 세션은 해제 안 함 — 캐시에서 재사용
 
   final generated = out.sublist(1);
-  logs?.add('디코더 완료: ${finalStep+1}스텝 → ${generated.length}토큰 생성');
+  logs?.add('디코더 완료: ${finalStep+1}스텝 → ${generated.length}토큰 (${hitEos ? "EOS도달" : "maxLen도달"})');
   logs?.add('출력 토큰ID(앞20): ${generated.take(20).toList()}');
   // 반복 패턴 감지
   if (generated.length > 4) {

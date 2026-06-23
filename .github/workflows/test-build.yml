@@ -1,0 +1,280 @@
+name: 테스트 빌드
+
+on:
+  workflow_dispatch:
+
+env:
+  FLUTTER_VERSION: '3.32.2'
+
+jobs:
+  test-build:
+    name: 테스트 APK 빌드
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 소스 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Java 17 설치
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Flutter 설치
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Flutter 빌드 시스템 파일 생성
+        run: |
+          flutter create \
+            --org com.pia \
+            --project-name pia_translate \
+            --platforms android \
+            /tmp/flutter_scaffold
+
+          TARGET=flutter_app/android
+          SRC=/tmp/flutter_scaffold/android
+
+          for f in build.gradle settings.gradle gradle.properties; do
+            if [ -f "$SRC/${f}.kts" ]; then
+              cp "$SRC/${f}.kts" "$TARGET/"
+            elif [ -f "$SRC/$f" ]; then
+              cp "$SRC/$f" "$TARGET/"
+            fi
+          done
+
+          if [ -f "$SRC/app/build.gradle.kts" ]; then
+            cp "$SRC/app/build.gradle.kts" "$TARGET/app/"
+          elif [ -f "$SRC/app/build.gradle" ]; then
+            cp "$SRC/app/build.gradle" "$TARGET/app/"
+          fi
+
+          cp -r "$SRC/gradle" "$TARGET/"
+          cp "$SRC/gradlew" "$TARGET/"
+          chmod +x "$TARGET/gradlew"
+
+          cp -r "$SRC/app/src/main/res/mipmap-"* \
+                "$TARGET/app/src/main/res/" 2>/dev/null || true
+          mkdir -p "$TARGET/app/src/main/res/values"
+          cp "$SRC/app/src/main/res/values/styles.xml" \
+             "$TARGET/app/src/main/res/values/" 2>/dev/null || true
+
+          cp "$SRC/app/proguard-rules.pro" "$TARGET/app/" 2>/dev/null || touch "$TARGET/app/proguard-rules.pro"
+          echo '-dontwarn com.google.android.play.core.**' >> "$TARGET/app/proguard-rules.pro"
+
+          for gradle_file in "$TARGET/app/build.gradle" "$TARGET/app/build.gradle.kts"; do
+            [ -f "$gradle_file" ] || continue
+            sed -i 's/applicationId "com\.pia\.pia_translate"/applicationId "com.pia.translate"/' "$gradle_file"
+            sed -i 's/namespace "com\.pia\.pia_translate"/namespace "com.pia.translate"/' "$gradle_file"
+            sed -i 's/applicationId = "com\.pia\.pia_translate"/applicationId = "com.pia.translate"/' "$gradle_file"
+            sed -i 's/namespace = "com\.pia\.pia_translate"/namespace = "com.pia.translate"/' "$gradle_file"
+          done
+
+      - name: minSdk 21 + NDK 버전 설정
+        run: |
+          for gradle_file in flutter_app/android/app/build.gradle flutter_app/android/app/build.gradle.kts; do
+            [ -f "$gradle_file" ] || continue
+            sed -i 's/minSdk flutter\.minSdkVersion/minSdk 21/' "$gradle_file"
+            sed -i 's/minSdk = flutter\.minSdkVersion/minSdk = 21/' "$gradle_file"
+            if grep -q 'ndkVersion' "$gradle_file"; then
+              sed -i 's/ndkVersion = .*/ndkVersion = "27.0.12077973"/' "$gradle_file"
+            else
+              sed -i 's/defaultConfig {/defaultConfig {\n        ndkVersion = "27.0.12077973"/' "$gradle_file"
+            fi
+          done
+
+      - name: pubspec.yaml + main.dart 복원
+        run: |
+          cat > flutter_app/pubspec.yaml << 'EOF'
+          name: pia_translate
+          description: Pia 오프라인 번역 — 완전 로컬 실행, 외부 서버 불필요
+          publish_to: none
+          version: 1.5.0+1
+
+          environment:
+            sdk: ">=3.0.0 <4.0.0"
+
+          dependencies:
+            flutter:
+              sdk: flutter
+            provider: ^6.1.2
+            path_provider: ^2.1.3
+            path: ^1.9.0
+            http: ^1.2.1
+            dio: ^5.4.3+1
+            archive: ^3.4.10
+            percent_indicator: ^4.2.3
+            share_plus: ^9.0.0
+            onnxruntime: ^1.4.1
+            shared_preferences: ^2.2.3
+            sqflite: ^2.3.3
+            uuid: ^4.4.0
+            image_picker: ^1.1.2
+            cupertino_icons: ^1.0.6
+
+          dev_dependencies:
+            flutter_test:
+              sdk: flutter
+            flutter_lints: ^4.0.0
+
+          flutter:
+            uses-material-design: true
+            assets:
+              - assets/models/
+          EOF
+
+          mkdir -p flutter_app/assets/models
+
+          cat > flutter_app/lib/main.dart << 'EOF'
+          import 'package:flutter/material.dart';
+          import 'package:provider/provider.dart';
+          import 'screens/home_screen.dart';
+          import 'services/data_collector.dart';
+          import 'state/translate_notifier.dart';
+
+          void main() async {
+            WidgetsFlutterBinding.ensureInitialized();
+            await DataCollector.instance.init();
+            runApp(
+              ChangeNotifierProvider(
+                create: (_) => TranslateNotifier(),
+                child: const PiaTranslateApp(),
+              ),
+            );
+          }
+
+          class PiaTranslateApp extends StatelessWidget {
+            const PiaTranslateApp({super.key});
+
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                title: 'Pia 번역',
+                debugShowCheckedModeBanner: false,
+                theme: ThemeData(
+                  colorScheme: ColorScheme.fromSeed(
+                    seedColor: const Color(0xFF1E2A3A),
+                    brightness: Brightness.light,
+                  ),
+                  useMaterial3: true,
+                ),
+                home: const HomeScreen(),
+              );
+            }
+          }
+          EOF
+
+      - name: app/build.gradle에 CMake(SentencePiece) 빌드 설정 추가
+        run: |
+          python3 - <<'PYEOF'
+          import os, re
+
+          kts   = 'flutter_app/android/app/build.gradle.kts'
+          groovy= 'flutter_app/android/app/build.gradle'
+
+          if os.path.exists(kts):
+              path, is_kts = kts, True
+          else:
+              path, is_kts = groovy, False
+
+          with open(path) as f:
+              content = f.read()
+
+          if 'externalNativeBuild' in content:
+              print('[skip] externalNativeBuild already present')
+          else:
+              if is_kts:
+                  block = '''
+              externalNativeBuild {
+                  cmake {
+                      path = file("CMakeLists.txt")
+                      version = "3.22.1"
+                  }
+              }
+          '''
+              else:
+                  block = '''
+              externalNativeBuild {
+                  cmake {
+                      path "CMakeLists.txt"
+                      version "3.22.1"
+                  }
+              }
+          '''
+              if 'buildTypes' in content:
+                  content = content.replace('    buildTypes {', block + '    buildTypes {', 1)
+              else:
+                  last = content.rfind('}')
+                  content = content[:last] + block + content[last:]
+
+              with open(path, 'w') as f:
+                  f.write(content)
+              print(f'[OK] externalNativeBuild 추가: {path}')
+          PYEOF
+
+      - name: Flutter 의존성 설치
+        working-directory: flutter_app
+        run: flutter pub get
+
+      - name: APK 빌드 (Release)
+        working-directory: flutter_app
+        run: flutter build apk --release
+
+      - name: APK 무결성 검증
+        id: verify_apk
+        run: |
+          APK=flutter_app/build/app/outputs/flutter-apk/app-release.apk
+          if [ ! -f "$APK" ]; then
+            echo "[실패] APK 파일이 생성되지 않았습니다"
+            exit 1
+          fi
+          SIZE=$(stat -c%s "$APK")
+          SIZE_MB=$((SIZE / 1024 / 1024))
+          SHA256=$(sha256sum "$APK" | awk '{print $1}')
+          echo "[OK] APK 크기: ${SIZE_MB}MB"
+          echo "[OK] SHA256: ${SHA256}"
+          echo "sha256=${SHA256}" >> $GITHUB_OUTPUT
+          if [ "$SIZE" -lt 5242880 ]; then
+            echo "[실패] APK 비정상 크기: ${SIZE_MB}MB"
+            exit 1
+          fi
+
+      - name: 기존 test-build 릴리스·태그 삭제
+        run: |
+          gh release delete test-build --yes 2>/dev/null || true
+          git push origin :refs/tags/test-build 2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: test-build 태그 생성
+        run: |
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+          git tag -f test-build
+          git push origin test-build --force
+
+      - name: GitHub Release 생성 (pre-release) & APK 업로드
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: test-build
+          name: "테스트 빌드 (자동 덮어쓰기)"
+          draft: false
+          prerelease: true
+          files: flutter_app/build/app/outputs/flutter-apk/app-release.apk
+          body: |
+            ## 테스트 빌드
+
+            > ⚠ 이 릴리스는 테스트 전용입니다. 다음 테스트 빌드 실행 시 자동으로 덮어쓰여집니다.
+
+            **고정 다운로드 링크 (항상 최신 테스트 빌드)**
+            https://github.com/rlaalswo4942/Pia-Translate/releases/download/test-build/app-release.apk
+
+            SHA256: ${{ steps.verify_apk.outputs.sha256 }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
