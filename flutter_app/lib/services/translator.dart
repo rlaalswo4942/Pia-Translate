@@ -316,12 +316,11 @@ Future<String> _translateWithModel({
     return inputText;
   }
 
-  // 개별 토큰 디코드 진단 (첫 8개)
-  for (int i = 0; i < tokens.length && i < 8; i++) {
-    final single = await _spDecode(tgtSpm, [tokens[i]]);
-    _L.log('DIAG', 'token[${tokens[i]}] → "$single"');
-  }
-
+  // target.spm 어휘 범위 초과 토큰이 있을 경우를 대비해 source.spm으로 먼저 시도
+  // source.spm은 vocab=65001 전체를 커버함
+  final decoded = await _spDecode(srcSpm, tokens);
+  if (decoded.isNotEmpty) return decoded;
+  // fallback: target.spm
   return _spDecode(tgtSpm, tokens);
 }
 
