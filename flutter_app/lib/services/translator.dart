@@ -236,10 +236,14 @@ List<int> _onnxInfer({
   logs?.add('디코더 출력명: ${decoder.outputNames}');
   logs?.add('디코더 greedy 시작: maxLen=$maxLen');
 
-  // No-repeat n-gram (size=3): 동일 3-그램 재등장 금지
-  // Repetition penalty (1.3): 출현한 토큰 logit ÷ 1.3 — HuggingFace MarianMT 기본값
-  const noRepeatNgramSize = 3;
-  const repetitionPenalty = 1.3;
+  // INT8 양자화로 인한 정밀도 손실로 EOS 확률이 top5 밖으로 밀려나 그리디가
+  // 종료를 못 찾고 동의어(Hi/hello/good 등) 사이를 맴도는 현상 완화용 설정.
+  // FP32 원본(HuggingFace)은 이 문제가 없음 — 근본 해결은 재양자화 필요,
+  // 아래는 로컬 실측(ko_en, INT8)으로 튜닝한 임시 완화값.
+  const noRepeatNgramSize = 2;
+  const repetitionPenalty = 3.0;
+  const eosBoostStartStep = 3;   // 이 스텝부터 EOS logit에 보너스 부여
+  const eosBoostPerStep   = 0.8; // 스텝마다 누적 증가
 
   final out = [bosId];
   int finalStep = 0;
@@ -285,13 +289,16 @@ List<int> _onnxInfer({
         }
       }
 
-      // Greedy 선택 + 반복 패널티
+      // Greedy 선택 + 반복 패널티 + EOS 점증 부스팅
       final seen = out.toSet();
       int nextToken = 0; double maxVal = double.negativeInfinity;
       for (int i = 0; i < lastLogits.length; i++) {
         if (banned.contains(i)) continue;
         double v = (lastLogits[i] as num).toDouble();
         if (seen.contains(i)) v = v > 0 ? v / repetitionPenalty : v * repetitionPenalty;
+        if (i == eosId && step >= eosBoostStartStep) {
+          v += eosBoostPerStep * (step - eosBoostStartStep + 1);
+        }
         if (v > maxVal) { maxVal = v; nextToken = i; }
       }
       dIn.release();
