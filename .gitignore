@@ -22,8 +22,10 @@ flutter_app/ios/.symlinks/
 flutter_app/ios/Flutter/Flutter.framework
 flutter_app/ios/Flutter/Flutter.podspec
 
-# 모델 파일 (용량 큼 — HuggingFace Hub에 별도 저장)
+# 모델 파일 (용량 큼 — GitHub Releases models-v1 태그에 별도 업로드)
 models/
+models_zip/
+models_check/
 flutter_app/assets/models/*.onnx
 flutter_app/assets/models/*.spm
 flutter_app/assets/models/*.bin

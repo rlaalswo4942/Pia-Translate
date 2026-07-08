@@ -194,11 +194,17 @@ List<int> _onnxInfer({
   }
   logs?.add('bosId=$bosId (출처:$cfgSrc) eosId=$eosId cfgFound=$cfgFound');
 
-  // 인코더 실행
-  final inTensor   = OrtValueTensor.createTensorWithDataList(Int64List.fromList(inputIds), [1, inputIds.length]);
-  final maskTensor = OrtValueTensor.createTensorWithDataList(Int64List.fromList(List.filled(inputIds.length, 1)), [1, inputIds.length]);
+  // 인코더 입력 끝에 EOS 부착 — 학습 시 소스 시퀀스는 항상 </s>로 끝나는데
+  // 이게 없으면 디코더가 EOS를 정상적으로 예측하지 못해 무한 반복에 빠지는
+  // 모델이 있음(en_ko ke-t5 로컬 검증으로 확인, 커밋 참고). 기존 모델들도
+  // 이 부착이 있는 편이 학습-추론 조건을 일치시켜 안전함.
+  final encInputIds = [...inputIds, eosId];
 
-  logs?.add('인코더 실행: 입력 ${inputIds.length}토큰');
+  // 인코더 실행
+  final inTensor   = OrtValueTensor.createTensorWithDataList(Int64List.fromList(encInputIds), [1, encInputIds.length]);
+  final maskTensor = OrtValueTensor.createTensorWithDataList(Int64List.fromList(List.filled(encInputIds.length, 1)), [1, encInputIds.length]);
+
+  logs?.add('인코더 실행: 입력 ${encInputIds.length}토큰(EOS 포함)');
   final encOut    = encoder.run(OrtRunOptions(), {'input_ids': inTensor, 'attention_mask': maskTensor});
   final hiddenRaw = encOut[0]?.value as List;
   final seqLen    = (hiddenRaw[0] as List).length;

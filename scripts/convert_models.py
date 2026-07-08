@@ -30,7 +30,11 @@ ZIP_DIR    = Path(__file__).parent.parent / "models_zip"
 
 MODELS = {
     "ko_en": "Helsinki-NLP/opus-mt-ko-en",
-    "en_ko": "Helsinki-NLP/opus-mt-en-ko",
+    # opus-mt-en-ko는 HF에서 401(비공개)로 접근 불가, 폴백인 tc-big-en-ko는
+    # 로컬 검증 결과 자체 품질이 나쁨(BUG-003). AI Hub 한영 1천만 쌍으로
+    # 파인튜닝된 Apache-2.0 T5 모델로 교체 (상업적 이용 가능, NLLB는
+    # CC-BY-NC라 제외). BUGS.md BUG-003 참고.
+    "en_ko": "seongs/ke-t5-base-aihub-koen-translation-integrated-10m-en-to-ko",
     "en_ja": "Helsinki-NLP/opus-mt-en-jap",
     "ja_en": "Helsinki-NLP/opus-mt-jap-en",
     "en_zh": "Helsinki-NLP/opus-mt-en-zh",
@@ -40,12 +44,15 @@ MODELS = {
 }
 
 # 401 발생 시 시도할 대안 모델 ID (같은 아키텍처, 다른 업로드 버전)
-MODEL_FALLBACKS = {
-    "en_ko": [
-        "Helsinki-NLP/opus-mt-en-ko",
-        "Helsinki-NLP/opus-mt-tc-big-en-ko",
-    ],
-}
+MODEL_FALLBACKS: dict[str, list[str]] = {}
+
+# source.spm/target.spm으로 분리된 MarianTokenizer가 아니라 단일
+# sentencepiece 모델(spiece.model 등)을 쓰는 모델. 앱의 JNI/Dart 쪽은
+# source.spm/target.spm 두 파일을 기대하므로, 패키징 시 동일한 단일 spm
+# 파일을 양쪽 이름으로 복사하고 vocab.json은 tokenizer.get_vocab()으로
+# 직접 생성한다 (MarianTokenizer.save_pretrained가 자동으로 만들어주는
+# vocab.json과 동일한 역할 — piece↔id 매핑).
+SINGLE_SPM_MODELS = {"en_ko"}
 
 
 def _check_deps() -> bool:
@@ -75,6 +82,28 @@ def _copy_spm_files(src_dir: Path, tok_dir: Path) -> bool:
         if not dest.exists():
             shutil.copy(f, dest)
     return True
+
+
+def _save_single_spm_tokenizer(hf_id: str, tok_dir: Path) -> None:
+    """단일 sentencepiece 모델(T5 등)을 앱이 기대하는 source.spm/target.spm +
+    vocab.json 형태로 저장한다 (SINGLE_SPM_MODELS 전용)."""
+    import json
+    from transformers import AutoTokenizer
+
+    tok = AutoTokenizer.from_pretrained(hf_id)
+    tok_dir.mkdir(parents=True, exist_ok=True)
+
+    spm_src = Path(tok.vocab_file)
+    if not spm_src.exists():
+        raise FileNotFoundError(f"단일 spm 파일을 찾을 수 없음: {spm_src}")
+    shutil.copy(spm_src, tok_dir / "source.spm")
+    shutil.copy(spm_src, tok_dir / "target.spm")
+
+    vocab = tok.get_vocab()
+    with open(tok_dir / "vocab.json", "w", encoding="utf-8") as f:
+        json.dump(vocab, f, ensure_ascii=False)
+
+    print(f"    [단일 spm] {spm_src.name} → source.spm/target.spm, vocab.json {len(vocab)}개")
 
 
 def _quantize_onnx(fp32_dir: Path, q_dir: Path) -> bool:
@@ -164,12 +193,15 @@ def convert_model(name: str, hf_id: str) -> bool:
                     q_dir.mkdir(parents=True, exist_ok=True)
                     shutil.copy(src, q_dir / f)
 
-        # ── 3. SentencePiece 토크나이저 저장 ────────────────────
-        tok = MarianTokenizer.from_pretrained(hf_id)
-        tok.save_pretrained(str(tok_dir))
-        _copy_spm_files(fp32_dir, tok_dir)
-        del tok
-        gc.collect()
+        # ── 3. 토크나이저 저장 ────────────────────────────────────
+        if name in SINGLE_SPM_MODELS:
+            _save_single_spm_tokenizer(hf_id, tok_dir)
+        else:
+            tok = MarianTokenizer.from_pretrained(hf_id)
+            tok.save_pretrained(str(tok_dir))
+            _copy_spm_files(fp32_dir, tok_dir)
+            del tok
+            gc.collect()
 
         # ── 4. FP32 임시 파일 정리 ──────────────────────────────
         shutil.rmtree(fp32_dir, ignore_errors=True)
