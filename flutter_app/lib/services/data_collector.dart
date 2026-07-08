@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -15,14 +16,21 @@ class DataCollector {
   static final DataCollector instance = DataCollector._();
   DataCollector._();
 
-  static const _kConsentKey  = 'pia_data_consent';
-  static const _kDbFile      = 'pia_training.db';
-  static const _kExportFile  = 'pia_training_data.jsonl';
-  static const _kTableName   = 'translations';
+  static const _kConsentKey    = 'pia_data_consent';
+  static const _kDbFile        = 'pia_training.db';
+  static const _kExportFile    = 'pia_training_data.jsonl';
+  static const _kTableName     = 'translations';
+  static const _kCentralUrlKey = 'pia_central_db_url';
+  static const _kCentralKeyKey = 'pia_central_db_api_key';
+
+  // 기본값: PC와 같은 Wi-Fi일 때 localhost:3001
+  static const _kDefaultUrl = 'http://localhost:3001';
 
   Database? _db;
   bool _consentGiven = false;
   bool _hasAnswered  = false;
+  String _centralUrl    = _kDefaultUrl;
+  String _centralApiKey = '';
 
   bool get consentGiven => _consentGiven;
   bool get hasAnswered  => _hasAnswered;
@@ -32,8 +40,23 @@ class DataCollector {
     final prefs = await SharedPreferences.getInstance();
     _hasAnswered  = prefs.containsKey(_kConsentKey);
     _consentGiven = prefs.getBool(_kConsentKey) ?? false;
+    _centralUrl    = prefs.getString(_kCentralUrlKey) ?? _kDefaultUrl;
+    _centralApiKey = prefs.getString(_kCentralKeyKey) ?? '';
     if (_consentGiven) await _openDb();
   }
+
+  // ── 중앙 DB 설정 ─────────────────────────────────────────────
+  Future<void> setCentralDb({required String url, required String apiKey}) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kCentralUrlKey, url);
+    await prefs.setString(_kCentralKeyKey, apiKey);
+    _centralUrl    = url;
+    _centralApiKey = apiKey;
+  }
+
+  String get centralUrl    => _centralUrl;
+  String get centralApiKey => _centralApiKey;
+  bool   get centralEnabled => _centralApiKey.isNotEmpty;
 
   // ── 사용자 동의 설정 ─────────────────────────────────────────
   Future<void> setConsent(bool value) async {
@@ -99,6 +122,31 @@ class DataCollector {
     );
     await _db!.insert(_kTableName, rec.toMap(),
         conflictAlgorithm: ConflictAlgorithm.replace);
+
+    // 중앙 DB 실시간 동기화 (실패해도 무시)
+    _syncToCentral(rec);
+  }
+
+  void _syncToCentral(TranslationRecord rec) {
+    if (!centralEnabled) return;
+    final payload = {
+      'transcript':   rec.sourceText,
+      'response':     rec.translatedText,
+      'notes':        '${rec.srcLang}→${rec.dstLang} [${rec.inputType}]'
+                      + (rec.sttRaw != null ? ' stt:${rec.sttRaw}' : '')
+                      + (rec.ocrRaw != null ? ' ocr:${rec.ocrRaw}' : ''),
+      'tags':         [rec.srcLang, rec.dstLang, rec.inputType],
+      'source':       'pia-translate',
+      'textCategory': 'TRANSCRIPT',
+    };
+    http.post(
+      Uri.parse('$_centralUrl/api/entries'),
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key':    _centralApiKey,
+      },
+      body: jsonEncode(payload),
+    ).catchError((_) {});   // 실패 무시
   }
 
   // ── 통계 ─────────────────────────────────────────────────────

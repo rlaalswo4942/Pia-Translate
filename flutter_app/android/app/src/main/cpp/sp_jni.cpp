@@ -96,4 +96,80 @@ Java_com_pia_translate_SentencePieceJNI_decode(
     return result;
 }
 
+/**
+ * 텍스트 → 서브워드 피스 문자열 배열 (raw id 아님)
+ * MarianTokenizer(HuggingFace)는 spm의 내부 id가 아니라 vocab.json을 통해
+ * piece↔id를 매핑하므로, ONNX 모델 입력에는 이 함수의 결과를 vocab.json으로
+ * 변환한 id를 사용해야 함.
+ * 반환: jobjectArray (jstring[])
+ */
+JNIEXPORT jobjectArray JNICALL
+Java_com_pia_translate_SentencePieceJNI_encodePieces(
+    JNIEnv* env, jclass /*clazz*/,
+    jstring model_path_j, jstring text_j
+) {
+    const char* model_path = env->GetStringUTFChars(model_path_j, nullptr);
+    const char* text       = env->GetStringUTFChars(text_j,       nullptr);
+
+    jclass stringClass = env->FindClass("java/lang/String");
+    jobjectArray result = env->NewObjectArray(0, stringClass, nullptr);
+
+    if (loadModel(std::string(model_path))) {
+        std::vector<std::string> pieces;
+        const auto status = g_sp.Encode(text, &pieces);
+        if (status.ok()) {
+            result = env->NewObjectArray(static_cast<jsize>(pieces.size()), stringClass, nullptr);
+            for (size_t i = 0; i < pieces.size(); i++) {
+                env->SetObjectArrayElement(result, static_cast<jsize>(i),
+                                            env->NewStringUTF(pieces[i].c_str()));
+            }
+        } else {
+            LOGE("EncodePieces 실패: %s", status.ToString().c_str());
+        }
+    }
+
+    env->ReleaseStringUTFChars(model_path_j, model_path);
+    env->ReleaseStringUTFChars(text_j,       text);
+    return result;
+}
+
+/**
+ * 서브워드 피스 문자열 배열 → 텍스트
+ * vocab.json으로 id→piece 변환한 결과를 여기에 전달해 재조립함.
+ * 반환: jstring (decoded text)
+ */
+JNIEXPORT jstring JNICALL
+Java_com_pia_translate_SentencePieceJNI_decodePieces(
+    JNIEnv* env, jclass /*clazz*/,
+    jstring model_path_j, jobjectArray pieces_j
+) {
+    const char* model_path = env->GetStringUTFChars(model_path_j, nullptr);
+
+    jstring result = env->NewStringUTF("");
+
+    if (loadModel(std::string(model_path))) {
+        const jsize len = env->GetArrayLength(pieces_j);
+        std::vector<std::string> pieces;
+        pieces.reserve(len);
+        for (jsize i = 0; i < len; i++) {
+            auto jpiece = static_cast<jstring>(env->GetObjectArrayElement(pieces_j, i));
+            const char* piece = env->GetStringUTFChars(jpiece, nullptr);
+            pieces.emplace_back(piece);
+            env->ReleaseStringUTFChars(jpiece, piece);
+            env->DeleteLocalRef(jpiece);
+        }
+
+        std::string decoded;
+        const auto status = g_sp.Decode(pieces, &decoded);
+        if (status.ok()) {
+            result = env->NewStringUTF(decoded.c_str());
+        } else {
+            LOGE("DecodePieces 실패: %s", status.ToString().c_str());
+        }
+    }
+
+    env->ReleaseStringUTFChars(model_path_j, model_path);
+    return result;
+}
+
 } // extern "C"

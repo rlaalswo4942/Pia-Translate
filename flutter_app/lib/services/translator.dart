@@ -14,20 +14,78 @@ final _L = AppLogger.instance;
 
 const _channel = MethodChannel('com.pia.translate/sentencepiece');
 
+// ── vocab.json 캐시 ──────────────────────────────────────────────────
+// MarianTokenizer(HuggingFace)는 SentencePiece 모델 자체의 내부 id가 아니라
+// vocab.json(piece↔id, 소스/타깃 공유, 65001개)을 통해 id를 매핑한다.
+// source.spm/target.spm의 내부 어휘(각 32000개)는 텍스트↔피스 변환에만 쓰이고,
+// ONNX 모델이 실제로 학습된 id 공간은 vocab.json 쪽이다. 이 매핑을 건너뛰고
+// spm 내부 id를 그대로 쓰면 완전히 다른(하지만 얼핏 그럴듯한) 단어로 디코딩되어
+// "언어는 맞는데 내용이 이상한" 오번역이 발생한다.
+class _Vocab {
+  final Map<String, int> pieceToId;
+  final Map<int, String> idToPiece;
+  final int unkId;
+  _Vocab(this.pieceToId, this.idToPiece, this.unkId);
+}
+
+final Map<String, _Vocab> _vocabCache = {};
+
+Future<_Vocab> _loadVocab(String modelDir) async {
+  return _vocabCache.putIfAbsent(modelDir, () {
+    final path = p.join(modelDir, 'tokenizer', 'vocab.json');
+    final map = jsonDecode(File(path).readAsStringSync()) as Map<String, dynamic>;
+    final pieceToId = <String, int>{};
+    final idToPiece = <int, String>{};
+    map.forEach((piece, id) {
+      final i = (id as num).toInt();
+      pieceToId[piece] = i;
+      idToPiece[i] = piece;
+    });
+    final unkId = pieceToId['<unk>'] ?? 1;
+    _L.log('SP', 'vocab.json 로드: ${pieceToId.length}개 (unk=$unkId) ← $path');
+    return _Vocab(pieceToId, idToPiece, unkId);
+  });
+}
+
 // ── SentencePiece — 메인 isolate 전용 (MethodChannel) ─────────────────
-Future<List<int>> _spEncode(String spModelPath, String text) async {
+// vocab.json이 없으면(구버전 모델 캐시 등) 안전하게 raw id 방식으로 폴백.
+Future<List<int>> _spEncode(String modelDir, String spModelPath, String text) async {
   _L.log('SP', '인코딩 입력: "${text.length > 40 ? text.substring(0, 40) + "…" : text}"');
-  final ids = await _channel.invokeMethod<List<dynamic>>(
-    'encode', {'modelPath': spModelPath, 'text': text});
-  final result = ids?.cast<int>() ?? [];
-  _L.log('SP', '인코딩 결과: ${result.length}개 토큰 ${result.take(10).toList()}');
+
+  if (!File(p.join(modelDir, 'tokenizer', 'vocab.json')).existsSync()) {
+    _L.log('WARN', 'vocab.json 없음 → raw id 인코딩으로 폴백 (재다운로드 권장)');
+    final ids = await _channel.invokeMethod<List<dynamic>>(
+      'encode', {'modelPath': spModelPath, 'text': text});
+    return ids?.cast<int>() ?? [];
+  }
+
+  final vocab  = await _loadVocab(modelDir);
+  final pieces = await _channel.invokeMethod<List<dynamic>>(
+    'encodePieces', {'modelPath': spModelPath, 'text': text});
+  final result = (pieces?.cast<String>() ?? [])
+      .map((piece) => vocab.pieceToId[piece] ?? vocab.unkId)
+      .toList();
+  _L.log('SP', '인코딩 결과: ${result.length}개 토큰(vocab.json id) ${result.take(10).toList()}');
   return result;
 }
 
-Future<String> _spDecode(String spModelPath, List<int> ids) async {
+Future<String> _spDecode(String modelDir, String spModelPath, List<int> ids) async {
   _L.log('SP', '디코딩 입력: ${ids.length}개 토큰 ${ids.take(10).toList()}');
+
+  if (!File(p.join(modelDir, 'tokenizer', 'vocab.json')).existsSync()) {
+    _L.log('WARN', 'vocab.json 없음 → raw id 디코딩으로 폴백 (재다운로드 권장)');
+    final text = await _channel.invokeMethod<String>(
+      'decode', {'modelPath': spModelPath, 'ids': ids});
+    return text ?? '';
+  }
+
+  final vocab  = await _loadVocab(modelDir);
+  final pieces = ids
+      .map((id) => vocab.idToPiece[id])
+      .whereType<String>()
+      .toList();
   final text = await _channel.invokeMethod<String>(
-    'decode', {'modelPath': spModelPath, 'ids': ids});
+    'decodePieces', {'modelPath': spModelPath, 'pieces': pieces});
   final result = text ?? '';
   _L.log('SP', '디코딩 결과: "${result.length > 60 ? result.substring(0, 60) + "…" : result}"');
   return result;
@@ -283,7 +341,7 @@ Future<String> _translateWithModel({
   final srcSpm = p.join(modelDir, 'tokenizer', 'source.spm');
   final tgtSpm = p.join(modelDir, 'tokenizer', 'target.spm');
 
-  final inputIds = await _spEncode(srcSpm, inputText);
+  final inputIds = await _spEncode(modelDir, srcSpm, inputText);
   if (inputIds.isEmpty) return inputText;
 
   final port  = await _ensureOnnxIsolate();
@@ -316,12 +374,11 @@ Future<String> _translateWithModel({
     return inputText;
   }
 
-  // target.spm 어휘 범위 초과 토큰이 있을 경우를 대비해 source.spm으로 먼저 시도
-  // source.spm은 vocab=65001 전체를 커버함
-  final decoded = await _spDecode(srcSpm, tokens);
-  if (decoded.isNotEmpty) return decoded;
-  // fallback: target.spm
-  return _spDecode(tgtSpm, tokens);
+  // 디코더 출력은 target 언어 토큰이므로 target.spm으로 디코딩해야 한다.
+  // (v1.5.20까지는 vocab.json 매핑 없이 raw id로 디코딩해 source.spm 폴백이
+  //  필요했으나, vocab.json 매핑 도입으로 더 이상 필요 없음 — id가 정확한
+  //  piece를 가리키므로 target.spm이 항상 올바른 대상)
+  return _spDecode(modelDir, tgtSpm, tokens);
 }
 
 const _romanceModels = {'en_fr', 'en_es', 'en_it', 'en_pt', 'en_ro'};

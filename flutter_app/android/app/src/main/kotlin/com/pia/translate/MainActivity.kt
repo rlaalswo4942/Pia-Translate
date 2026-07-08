@@ -36,6 +36,25 @@ class MainActivity : FlutterActivity() {
                             result.error("DECODE_ERROR", e.message, null)
                         }
                     }
+                    "encodePieces" -> {
+                        val modelPath = call.argument<String>("modelPath") ?: ""
+                        val text      = call.argument<String>("text") ?: ""
+                        try {
+                            result.success(SentencePieceJNI.encodePieces(modelPath, text).toList())
+                        } catch (e: Exception) {
+                            result.error("ENCODE_PIECES_ERROR", e.message, null)
+                        }
+                    }
+                    "decodePieces" -> {
+                        val modelPath = call.argument<String>("modelPath") ?: ""
+                        val pieces    = call.argument<List<String>>("pieces")
+                                            ?.toTypedArray() ?: arrayOf()
+                        try {
+                            result.success(SentencePieceJNI.decodePieces(modelPath, pieces))
+                        } catch (e: Exception) {
+                            result.error("DECODE_PIECES_ERROR", e.message, null)
+                        }
+                    }
                     else -> result.notImplemented()
                 }
             }

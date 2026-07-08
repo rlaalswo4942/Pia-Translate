@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../core/config.dart';
 import '../services/app_logger.dart';
+import '../services/data_collector.dart';
 import '../state/translate_notifier.dart';
 import '../widgets/language_bar.dart';
 import '../widgets/mic_button.dart';
@@ -92,6 +93,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   builder: (_) => const ModelManagerSheet(),
                 ),
               ),
+              IconButton(
+                icon: const Icon(Icons.sync_outlined),
+                tooltip: '중앙 DB 동기화 설정',
+                onPressed: () => _showCentralDbDialog(ctx),
+              ),
             ],
           ),
           body: Column(children: [
@@ -104,6 +110,59 @@ class _HomeScreenState extends State<HomeScreen> {
           ]),
         );
       },
+    ),
+  );
+}
+
+// ── 중앙 DB 동기화 설정 다이얼로그 ────────────────────────────────────
+// URL/API 키는 소스에 하드코딩하지 않고 기기별로 직접 입력 (공개 저장소이므로
+// 키를 커밋하면 안 됨). 입력값은 SharedPreferences에만 저장됨.
+void _showCentralDbDialog(BuildContext context) {
+  final urlCtrl = TextEditingController(text: DataCollector.instance.centralUrl);
+  final keyCtrl = TextEditingController(text: DataCollector.instance.centralApiKey);
+
+  showDialog(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('중앙 DB 동기화'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            DataCollector.instance.consentGiven
+                ? '학습 데이터 수집 동의됨 — 켜면 번역 기록이 아래 서버로 실시간 전송됩니다.'
+                : '먼저 학습 데이터 수집에 동의해야 로컬 저장 및 동기화가 시작됩니다.',
+            style: const TextStyle(fontSize: 12, color: Colors.grey),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: urlCtrl,
+            decoration: const InputDecoration(labelText: '서버 URL', hintText: 'http://192.168.0.x:3001'),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: keyCtrl,
+            decoration: const InputDecoration(labelText: 'API 키'),
+            obscureText: true,
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('취소'),
+        ),
+        ElevatedButton(
+          onPressed: () async {
+            await DataCollector.instance.setCentralDb(
+              url: urlCtrl.text.trim(),
+              apiKey: keyCtrl.text.trim(),
+            );
+            if (ctx.mounted) Navigator.pop(ctx);
+          },
+          child: const Text('저장'),
+        ),
+      ],
     ),
   );
 }
