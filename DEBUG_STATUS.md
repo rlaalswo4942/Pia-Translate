@@ -5,11 +5,23 @@
 
 ---
 
-## 현재 상태 (2026-06-19 v1.5.7 기준)
+## 현재 상태 (2026-07-08 기준)
 
-**앱 실행 성공, 모델 다운로드+압축 해제 성공, 번역 오류 수정 진행 중**
+**오번역(BUG-002) 원인 확정·수정 완료. 반복 루프 완화 완료. en_ko 모델 자체 품질 이슈는 별도 미해결(BUG-003).**
 
-- 최신 빌드: **v1.5.7** (CI 빌드 후 배포 예정)
+자세한 오류별 기록은 `BUGS.md` 참고. 다음 세션 이어받기 요약:
+
+1. **오번역 근본 원인**: JNI가 SentencePiece 내부 id를 vocab.json id처럼 그대로 써서 완전히 다른 단어로
+   디코딩됐음("안녕하세요"→"여호와하나님"). `encodePieces`/`decodePieces`로 교체 + vocab.json 매핑 추가로 해결.
+   커밋 `bf819cd`.
+2. **INT8 양자화로 인한 EOS 미도달 반복**: BUG-002 수정 후 새로 드러남. FP32 원본은 문제없음(로컬 검증).
+   repetition_penalty/no-repeat-ngram 강화 + EOS 점증 부스팅으로 완화. 커밋 `ad401fd`. 근본 해결(재양자화)은 미착수.
+3. **en_ko(tc-big-en-ko 폴백) 모델 자체가 저품질** — 코드 문제 아님, 모델 자체 한계. 별도 대응 필요.
+4. 검증 방법: `flutter_app`과 별개로 로컬 Python(`transformers`+`onnxruntime`+`sentencepiece`)으로
+   실제 모델 zip을 풀어 vocab.json 매핑·디코딩 로직을 그대로 재현하면 실기기 설치 없이 빠르게 검증 가능
+   (본 세션에서 사용한 방법, `verify_translation.py` 패턴 참고).
+
+- 최신 빌드: test-build (CI workflow_dispatch로 수시 갱신)
 - 다운로드 페이지: https://rlaalswo4942.github.io/Pia-Translate/
 - 저장소: https://github.com/rlaalswo4942/Pia-Translate
 
