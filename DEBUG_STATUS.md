@@ -5,21 +5,50 @@
 
 ---
 
-## 현재 상태 (2026-07-08 기준)
+## 현재 상태 (2026-07-09 기준 — 세션 일시 중단, 이어서 작업 예정)
 
-**오번역(BUG-002) 원인 확정·수정 완료. 반복 루프 완화 완료. en_ko 모델 자체 품질 이슈는 별도 미해결(BUG-003).**
+**BUG-003(en_ko 저품질)·BUG-004(EOS 미부착 근본원인) 모두 원인 확정 및 수정 완료, 코드/모델 배포까지 끝남.
+실기기 최종 확인만 중단된 상태 — 재개 시 "우선순위 0" 부터 이어서 하면 됨.**
 
-자세한 오류별 기록은 `BUGS.md` 참고. 다음 세션 이어받기 요약:
+### 우선순위 0: 실기기 확인 재개 (중단 지점)
 
-1. **오번역 근본 원인**: JNI가 SentencePiece 내부 id를 vocab.json id처럼 그대로 써서 완전히 다른 단어로
-   디코딩됐음("안녕하세요"→"여호와하나님"). `encodePieces`/`decodePieces`로 교체 + vocab.json 매핑 추가로 해결.
-   커밋 `bf819cd`.
-2. **INT8 양자화로 인한 EOS 미도달 반복**: BUG-002 수정 후 새로 드러남. FP32 원본은 문제없음(로컬 검증).
-   repetition_penalty/no-repeat-ngram 강화 + EOS 점증 부스팅으로 완화. 커밋 `ad401fd`. 근본 해결(재양자화)은 미착수.
-3. **en_ko(tc-big-en-ko 폴백) 모델 자체가 저품질** — 코드 문제 아님, 모델 자체 한계. 별도 대응 필요.
-4. 검증 방법: `flutter_app`과 별개로 로컬 Python(`transformers`+`onnxruntime`+`sentencepiece`)으로
-   실제 모델 zip을 풀어 vocab.json 매핑·디코딩 로직을 그대로 재현하면 실기기 설치 없이 빠르게 검증 가능
-   (본 세션에서 사용한 방법, `verify_translation.py` 패턴 참고).
+- 새 APK 설치 완료(`com.pia.translate`), 모델 8개 다운로드도 완료된 상태에서 중단함.
+- 앱을 영어→한국어로 전환(스왑 버튼 원본좌표 약 (541,321))까지 확인함.
+- adb `input tap`으로 입력창 포커스 후 `input text "hello%sworld"`를 보냈는데 **텍스트가 실제로 안 들어감**
+  (스크린샷상 입력창이 계속 placeholder 상태, 소프트키보드는 뜨는데 한글 자판이 떠 있어서 영문 입력이 씹혔을 가능성).
+  → 재개 시: 키보드를 영문 모드로 전환하거나(`오/한` 키 토글), `adb shell input keyevent` 조합으로 자모 대신
+  직접 텍스트 주입, 혹은 `uiautomator dump`로 EditText 포커스 상태를 먼저 확인 후 재시도할 것.
+- adb: `C:\Users\com\AppData\Local\Android\Sdk\platform-tools\adb.exe`, 기기 `R3CT701SC3R` (Samsung SM_S906N).
+- 테스트 문장: "hello world", "I love this app", "Where is the nearest subway station?" 등
+  (로컬 Python 검증 결과와 실기기 결과 일치하는지 확인 목적).
+
+### 이번 세션에서 처리한 것 (커밋 `e40ec4f`, `4e8174a`, 모두 push 완료)
+
+1. **BUG-004(진짜 근본 원인, 신규 발견)**: 인코더 입력에 EOS 토큰을 안 붙이던 문제.
+   FP32 opus-mt-ko-en으로 로컬 재현 — EOS 없으면 "Hi Hi Hi...", 붙이면 "Hello."로 정상 종료.
+   기존에 BUG-002 이후 "INT8 양자화 부작용"으로 추정했던 반복 루프의 진짜 원인이었음(양자화는 증상만 악화).
+   `translator.dart`의 `_onnxInfer`에서 `encInputIds = [...inputIds, eosId]`로 전 언어쌍 공통 수정. 커밋 `e40ec4f`.
+2. **BUG-003(en_ko 저품질) 해결**: `Helsinki-NLP/opus-mt-tc-big-en-ko` → `seongs/ke-t5-base-aihub-koen-
+   translation-integrated-10m-en-to-ko`(T5, 0.2B, AI Hub 1천만 쌍, **Apache-2.0**)로 교체.
+   NLLB는 품질 더 좋았지만 **CC-BY-NC 라이선스라 상업화 계획과 충돌**해 제외(사용자 확인함).
+   단일 `spiece.model` 토크나이저라 `scripts/convert_models.py`에 `SINGLE_SPM_MODELS` 패키징 경로 추가.
+   커밋 `e40ec4f`.
+3. **CI 보안검사 오탐 수정**: `data_collector.dart`/`home_screen.dart`의 로컬 Wi-Fi 기본값(`localhost:3001`,
+   `192.168.0.x`)을 `http://` 평문 검사가 걸러 빌드 실패시키던 것 수정 — 로컬/사설 IP 대역 제외(사용자 승인 후 적용).
+   커밋 `4e8174a`.
+4. `en_ko.zip`을 `models-v1` 릴리스에 재업로드 완료 (60MB → 243MB, T5가 Marian보다 큰 아키텍처라 커짐).
+   릴리스 설명 크기 표도 실측치로 갱신함.
+5. CI test-build 빌드 성공 확인(run `28967971588`), APK를 폰에 설치하고 모델 8개 다운로드까지 완료 —
+   여기서 사용자 요청으로 세션 중단.
+6. 로컬 검증(PyTorch FP32 + 양자화된 ONNX INT8 둘 다, 앱과 동일한 파이프라인 시뮬레이션)에서는
+   "hello world"→"안녕하세요", "I love this app"→"나는 이 앱을 좋아해." 등 정상 품질 확인함 —
+   **다만 이건 PC 시뮬레이션이고, 실기기(JNI)에서 최종 확인은 아직 안 됨.**
+
+### 검증 방법 (재사용 가능)
+
+`flutter_app`과 별개로 로컬 Python(`transformers`+`onnxruntime`+`sentencepiece`)으로 실제 모델 zip을 풀어
+vocab.json 매핑·EOS 부착·디코딩 로직을 그대로 재현하면 실기기 설치 없이 빠르게 검증 가능
+(이번 세션에서 BUG-004/en_ko 신모델 검증에 사용한 방법).
 
 - 최신 빌드: test-build (CI workflow_dispatch로 수시 갱신)
 - 다운로드 페이지: https://rlaalswo4942.github.io/Pia-Translate/
